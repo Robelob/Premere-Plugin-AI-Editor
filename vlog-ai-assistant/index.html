@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>Premiere AI Assistant</title>
+    <link rel="stylesheet" href="css/variables.css" />
+    <link rel="stylesheet" href="css/main.css" />
+    <link rel="stylesheet" href="css/components.css" />
+</head>
+<body>
+    <sp-body class="panel-container">
+        <!-- Header -->
+        <div class="panel-header">
+            <h1>Premiere AI Assistant</h1>
+            <p class="subtitle">Automate your vlog editing</p>
+        </div>
+
+        <!-- Status Section -->
+        <div class="status-section">
+            <div class="status-indicator" id="statusIndicator">
+                <sp-icon-circle-check-solid size="m" class="icon"></sp-icon-circle-check-solid>
+                <span id="statusText">Ready</span>
+            </div>
+        </div>
+
+        <!-- Feature Tabs -->
+        <sp-tabs selected="silence">
+            <!-- Silence Removal Tab -->
+            <sp-tab label="Silence Removal" value="silence">
+                <div class="tab-content">
+                    <p class="description">Automatically detect and remove silent segments from your vlog.</p>
+                    <div class="control-group">
+                        <label for="silenceThreshold">Silence Threshold (dB):</label>
+                        <sp-number-field id="silenceThreshold" value="-50" min="-80" max="-10"></sp-number-field>
+                    </div>
+                    <div class="control-group">
+                        <label for="minSilenceDuration">Min Duration (ms):</label>
+                        <sp-number-field id="minSilenceDuration" value="500" min="100" max="2000" step="100"></sp-number-field>
+                    </div>
+                    <sp-button id="analyzeSilenceBtn" variant="cta" onclick="UIController.analyzeSilence()">
+                        Analyze Silence
+                    </sp-button>
+                </div>
+            </sp-tab>
+
+            <!-- B-Roll Detection Tab -->
+            <sp-tab label="B-Roll Detection" value="broll">
+                <div class="tab-content">
+                    <p class="description">Detect moments where visual B-roll could enhance your video.</p>
+                    <div class="control-group">
+                        <label for="confidenceThreshold">Confidence Threshold:</label>
+                        <sp-slider id="confidenceThreshold" value="0.7" min="0.5" max="0.95" step="0.05"></sp-slider>
+                    </div>
+                    <sp-button id="detectBrollBtn" variant="cta" onclick="UIController.detectBroll()">
+                        Detect B-Roll Opportunities
+                    </sp-button>
+                </div>
+            </sp-tab>
+
+            <!-- Settings Tab -->
+            <sp-tab label="Settings" value="settings">
+                <div class="tab-content">
+                    <p class="description">Configure plugin behavior and preferences.</p>
+                    <div class="control-group">
+                        <sp-checkbox id="enableDebug" onchange="UIController.toggleDebugMode()">
+                            Enable Debug Mode
+                        </sp-checkbox>
+                    </div>
+                    <div class="control-group">
+                        <sp-checkbox id="enableAutoApply" checked>
+                            Auto-apply minor edits
+                        </sp-checkbox>
+                    </div>
+                    <div class="divider"></div>
+                    <label>API Configuration:</label>
+                    <div class="control-group">
+                        <sp-field-label for="apiKeyInput">Gemini API Key:</sp-field-label>
+                        <sp-textfield id="apiKeyInput" type="password" placeholder="Enter your API key"></sp-textfield>
+                    </div>
+                </div>
+            </sp-tab>
+        </sp-tabs>
+
+        <!-- Results Section (Hidden by default) -->
+        <div id="resultsSection" class="results-section" style="display: none;">
+            <h3>Analysis Results</h3>
+            <div id="resultsList" class="results-list"></div>
+            <div class="action-buttons">
+                <sp-button id="applyEditsBtn" variant="cta" onclick="UIController.applyEdits()">
+                    Apply Edits
+                </sp-button>
+                <sp-button id="discardResultsBtn" onclick="UIController.discardResults()">
+                    Discard
+                </sp-button>
+            </div>
+        </div>
+
+        <!-- Loading Indicator -->
+        <div id="loadingIndicator" class="loading-indicator" style="display: none;">
+            <sp-icon class="spinner"></sp-icon>
+            <p>Analyzing your project...</p>
+        </div>
+
+        <!-- Error Message (Hidden by default) -->
+        <div id="errorMessage" class="error-message" style="display: none;">
+            <sp-icon-alert-circle size="m"></sp-icon-alert-circle>
+            <p id="errorText"></p>
+        </div>
+
+        <!-- Footer -->
+        <div class="panel-footer">
+            <p class="version">v0.1.0</p>
+            <p class="help-text">Need help? Check the documentation.</p>
+        </div>
+    </sp-body>
+
+    <!-- Import Spectrum UXP components -->
+    <script src="https://opensource.adobe.com/spectrum-web-components/dist/spectrum-web-components.js"></script>
+    
+    <!-- Import core logic -->
+    <script src="js/utils/logger.js"></script>
+    <script src="js/utils/constants.js"></script>
+    <script src="js/utils/validators.js"></script>
+    <script src="js/ui/ui-state.js"></script>
+    <script src="js/ui/ui-controller.js"></script>
+    <script src="js/index.js"></script>
+</body>
+</html>

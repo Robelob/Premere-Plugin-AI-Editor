@@ -1,0 +1,23 @@
+{
+    "manifestVersion": 5,
+    "id": "com.robelaipremiereassistant.plugin.v2",
+    "version": "0.1.0",
+    "name": "Premiere AI Assistant",
+    "main": "index.html",
+    "requiredPermissions": {
+        "network": {
+            "domains": "all"
+        }
+    },
+    "host": {
+        "app": "premierepro",
+        "minVersion": "24.0"
+    },
+    "entryPoints": [
+        {
+            "type": "panel",
+            "id": "PremiereAIAssistantPanel",
+            "label": "Premiere AI Assistant"
+        }
+    ]
+}

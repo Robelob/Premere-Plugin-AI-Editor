@@ -1,0 +1,216 @@
+﻿/* Reusable Component Styles */
+
+/* Button Variations */
+sp-button {
+    margin: var(--spectrum-spacing-200) 0;
+    font-weight: 600;
+    text-transform: none;
+}
+
+sp-button[variant='cta'] {
+    background-color: var(--spectrum-global-color-blue-500);
+    color: white;
+}
+
+sp-button[variant='cta']:hover {
+    background-color: var(--spectrum-global-color-blue-600);
+}
+
+sp-button[variant='cta']:active {
+    background-color: var(--spectrum-global-color-blue-700);
+}
+
+sp-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Form Inputs */
+sp-number-field input,
+sp-textfield input {
+    padding: var(--spectrum-spacing-200);
+    border: 1px solid var(--spectrum-global-color-gray-400);
+    border-radius: var(--spectrum-border-radius);
+    font-size: var(--spectrum-font-size-200);
+}
+
+sp-number-field input:focus,
+sp-textfield input:focus {
+    border-color: var(--spectrum-global-color-blue-500);
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(16, 110, 190, 0.2);
+}
+
+/* Checkbox */
+sp-checkbox {
+    margin: var(--spectrum-spacing-200) 0;
+}
+
+/* Field Labels */
+sp-field-label {
+    display: block;
+    margin-bottom: var(--spectrum-spacing-100);
+    font-weight: 600;
+    font-size: var(--spectrum-font-size-200);
+}
+
+/* Icon Buttons */
+sp-icon {
+    display: inline-block;
+}
+
+/* Tabs Styling */
+sp-tab {
+    padding: var(--spectrum-spacing-300);
+}
+
+sp-tab[selected] {
+    border-bottom: 2px solid var(--spectrum-global-color-blue-500);
+}
+
+/* Badge/Chip */
+.badge {
+    display: inline-block;
+    padding: var(--spectrum-spacing-100) var(--spectrum-spacing-200);
+    background-color: var(--spectrum-global-color-blue-100);
+    color: var(--spectrum-global-color-blue-700);
+    border-radius: 12px;
+    font-size: var(--spectrum-font-size-75);
+    font-weight: 600;
+}
+
+.badge.success {
+    background-color: #e8f5e9;
+    color: var(--spectrum-semantic-green-500);
+}
+
+.badge.error {
+    background-color: #ffebee;
+    color: var(--spectrum-semantic-red-500);
+}
+
+.badge.warning {
+    background-color: #fff3e0;
+    color: var(--spectrum-semantic-yellow-500);
+}
+
+/* Progress Bar */
+.progress-bar {
+    width: 100%;
+    height: 4px;
+    background-color: var(--spectrum-global-color-gray-300);
+    border-radius: 2px;
+    overflow: hidden;
+    margin: var(--spectrum-spacing-300) 0;
+}
+
+.progress-bar-fill {
+    height: 100%;
+    background-color: var(--spectrum-global-color-blue-500);
+    transition: width 0.3s ease;
+}
+
+/* Tooltip */
+.tooltip {
+    position: relative;
+    display: inline-block;
+}
+
+.tooltip .tooltip-text {
+    visibility: hidden;
+    background-color: var(--spectrum-global-color-gray-800);
+    color: white;
+    text-align: center;
+    border-radius: 4px;
+    padding: var(--spectrum-spacing-200);
+    position: absolute;
+    z-index: 1;
+    bottom: 125%;
+    left: 50%;
+    margin-left: -50px;
+    opacity: 0;
+    transition: opacity 0.3s;
+    font-size: var(--spectrum-font-size-75);
+    white-space: nowrap;
+}
+
+.tooltip:hover .tooltip-text {
+    visibility: visible;
+    opacity: 1;
+}
+
+/* Alert Box */
+.alert {
+    padding: var(--spectrum-spacing-300);
+    border-radius: var(--spectrum-border-radius);
+    margin-bottom: var(--spectrum-spacing-300);
+    border-left: 4px solid;
+    display: flex;
+    align-items: flex-start;
+    gap: var(--spectrum-spacing-200);
+}
+
+.alert.info {
+    background-color: #e3f2fd;
+    border-left-color: var(--spectrum-global-color-blue-500);
+    color: #1565c0;
+}
+
+.alert.success {
+    background-color: #e8f5e9;
+    border-left-color: var(--spectrum-semantic-green-500);
+    color: #2e7d32;
+}
+
+.alert.warning {
+    background-color: #fff3e0;
+    border-left-color: var(--spectrum-semantic-yellow-500);
+    color: #e65100;
+}
+
+.alert.error {
+    background-color: #ffebee;
+    border-left-color: var(--spectrum-semantic-red-500);
+    color: #b71c1c;
+}
+
+/* Divider Variants */
+.divider-vertical {
+    width: 1px;
+    height: 100%;
+    background-color: var(--spectrum-global-color-gray-300);
+}
+
+.divider-dashed {
+    border-top: 1px dashed var(--spectrum-global-color-gray-400);
+    margin: var(--spectrum-spacing-400) 0;
+}
+
+/* Utility Classes */
+.mt-1 { margin-top: var(--spectrum-spacing-100); }
+.mt-2 { margin-top: var(--spectrum-spacing-200); }
+.mt-3 { margin-top: var(--spectrum-spacing-300); }
+.mt-4 { margin-top: var(--spectrum-spacing-400); }
+
+.mb-1 { margin-bottom: var(--spectrum-spacing-100); }
+.mb-2 { margin-bottom: var(--spectrum-spacing-200); }
+.mb-3 { margin-bottom: var(--spectrum-spacing-300); }
+.mb-4 { margin-bottom: var(--spectrum-spacing-400); }
+
+.p-1 { padding: var(--spectrum-spacing-100); }
+.p-2 { padding: var(--spectrum-spacing-200); }
+.p-3 { padding: var(--spectrum-spacing-300); }
+.p-4 { padding: var(--spectrum-spacing-400); }
+
+.text-center { text-align: center; }
+.text-right { text-align: right; }
+.text-muted { color: var(--spectrum-global-color-gray-700); }
+.text-error { color: var(--spectrum-semantic-red-500); }
+.text-success { color: var(--spectrum-semantic-green-500); }
+
+.flex { display: flex; }
+.flex-center { display: flex; align-items: center; justify-content: center; }
+.flex-between { display: flex; align-items: center; justify-content: space-between; }
+.gap-1 { gap: var(--spectrum-spacing-100); }
+.gap-2 { gap: var(--spectrum-spacing-200); }
+.gap-3 { gap: var(--spectrum-spacing-300); }
