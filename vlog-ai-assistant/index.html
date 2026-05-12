@@ -2,127 +2,195 @@
 <html>
 <head>
     <meta charset="utf-8" />
-    <title>Premiere AI Assistant</title>
+    <title>Vlog AI Assistant</title>
     <link rel="stylesheet" href="css/variables.css" />
     <link rel="stylesheet" href="css/main.css" />
     <link rel="stylesheet" href="css/components.css" />
 </head>
 <body>
-    <sp-body class="panel-container">
-        <!-- Header -->
-        <div class="panel-header">
-            <h1>Premiere AI Assistant</h1>
-            <p class="subtitle">Automate your vlog editing</p>
-        </div>
+<div class="panel">
 
-        <!-- Status Section -->
-        <div class="status-section">
-            <div class="status-indicator" id="statusIndicator">
-                <sp-icon-circle-check-solid size="m" class="icon"></sp-icon-circle-check-solid>
-                <span id="statusText">Ready</span>
+    <!-- ── Header ── -->
+    <header class="header">
+        <div class="header-brand">
+            <div class="brand-icon">AI</div>
+            <div>
+                <div class="brand-title">Vlog Assistant</div>
+                <div class="brand-sub">Premiere Pro · Gemini AI</div>
             </div>
         </div>
+        <div class="status-pill status-ready" id="statusIndicator">
+            <div class="status-dot"></div>
+            <span id="statusText">READY</span>
+        </div>
+    </header>
 
-        <!-- Feature Tabs -->
-        <sp-tabs selected="silence">
-            <!-- Silence Removal Tab -->
-            <sp-tab label="Silence Removal" value="silence">
-                <div class="tab-content">
-                    <p class="description">Automatically detect and remove silent segments from your vlog.</p>
-                    <div class="control-group">
-                        <label for="silenceThreshold">Silence Threshold (dB):</label>
-                        <sp-number-field id="silenceThreshold" value="-50" min="-80" max="-10"></sp-number-field>
-                    </div>
-                    <div class="control-group">
-                        <label for="minSilenceDuration">Min Duration (ms):</label>
-                        <sp-number-field id="minSilenceDuration" value="500" min="100" max="2000" step="100"></sp-number-field>
-                    </div>
-                    <sp-button id="analyzeSilenceBtn" variant="cta" onclick="UIController.analyzeSilence()">
-                        Analyze Silence
-                    </sp-button>
+    <!-- ── Sequence Selector ── -->
+    <div class="seq-bar">
+        <div class="seq-label">Active Sequence</div>
+        <div class="seq-row">
+            <select id="sequenceSelect" class="seq-select" onchange="UIController.onSequenceChange()">
+                <option value="">── Double-click a sequence in Premiere to open it ──</option>
+            </select>
+            <button class="icon-btn" onclick="UIController.refreshSequences()" title="Reload sequences from project">↺</button>
+        </div>
+        <div id="seqHint" class="seq-hint" style="display:none">
+            ⚠ No sequence detected — use Override below or open a sequence in the Premiere timeline
+        </div>
+    </div>
+
+    <!-- ── Tab Bar ── -->
+    <div class="tab-bar">
+        <button class="tab-btn active" data-tab="silence" onclick="UIController.switchTab('silence')">
+            <span class="tab-icon">◈</span> Silence
+        </button>
+        <button class="tab-btn" data-tab="broll" onclick="UIController.switchTab('broll')">
+            <span class="tab-icon">◉</span> B-Roll
+        </button>
+        <button class="tab-btn" data-tab="config" onclick="UIController.switchTab('config')">
+            <span class="tab-icon">⚙</span> Config
+        </button>
+    </div>
+
+    <!-- ── Tab Panels ── -->
+    <div class="panels">
+
+        <!-- Silence Panel -->
+        <div class="panel-content active" id="panel-silence">
+            <p class="panel-desc">AI scans your clip timeline to find dead air and silent gaps. Results appear as markers on your timeline.</p>
+
+            <div class="field-group">
+                <label class="field-label">Silence Threshold</label>
+                <div class="range-row">
+                    <input type="range" id="silenceThreshold" class="range-input"
+                           min="-80" max="-10" value="-50" step="1"
+                           oninput="UIController.updateRangeDisplay('silenceThreshold', this.value, ' dB')">
+                    <span class="range-value" id="silenceThreshold-val">-50 dB</span>
                 </div>
-            </sp-tab>
-
-            <!-- B-Roll Detection Tab -->
-            <sp-tab label="B-Roll Detection" value="broll">
-                <div class="tab-content">
-                    <p class="description">Detect moments where visual B-roll could enhance your video.</p>
-                    <div class="control-group">
-                        <label for="confidenceThreshold">Confidence Threshold:</label>
-                        <sp-slider id="confidenceThreshold" value="0.7" min="0.5" max="0.95" step="0.05"></sp-slider>
-                    </div>
-                    <sp-button id="detectBrollBtn" variant="cta" onclick="UIController.detectBroll()">
-                        Detect B-Roll Opportunities
-                    </sp-button>
-                </div>
-            </sp-tab>
-
-            <!-- Settings Tab -->
-            <sp-tab label="Settings" value="settings">
-                <div class="tab-content">
-                    <p class="description">Configure plugin behavior and preferences.</p>
-                    <div class="control-group">
-                        <sp-checkbox id="enableDebug" onchange="UIController.toggleDebugMode()">
-                            Enable Debug Mode
-                        </sp-checkbox>
-                    </div>
-                    <div class="control-group">
-                        <sp-checkbox id="enableAutoApply" checked>
-                            Auto-apply minor edits
-                        </sp-checkbox>
-                    </div>
-                    <div class="divider"></div>
-                    <label>API Configuration:</label>
-                    <div class="control-group">
-                        <sp-field-label for="apiKeyInput">Gemini API Key:</sp-field-label>
-                        <sp-textfield id="apiKeyInput" type="password" placeholder="Enter your API key"></sp-textfield>
-                    </div>
-                </div>
-            </sp-tab>
-        </sp-tabs>
-
-        <!-- Results Section (Hidden by default) -->
-        <div id="resultsSection" class="results-section" style="display: none;">
-            <h3>Analysis Results</h3>
-            <div id="resultsList" class="results-list"></div>
-            <div class="action-buttons">
-                <sp-button id="applyEditsBtn" variant="cta" onclick="UIController.applyEdits()">
-                    Apply Edits
-                </sp-button>
-                <sp-button id="discardResultsBtn" onclick="UIController.discardResults()">
-                    Discard
-                </sp-button>
             </div>
+
+            <div class="field-group">
+                <label class="field-label">Min Silence Duration</label>
+                <div class="range-row">
+                    <input type="range" id="minSilenceDuration" class="range-input"
+                           min="100" max="2000" value="500" step="100"
+                           oninput="UIController.updateRangeDisplay('minSilenceDuration', this.value, ' ms')">
+                    <span class="range-value" id="minSilenceDuration-val">500 ms</span>
+                </div>
+            </div>
+
+            <button class="cta-btn" onclick="UIController.analyzeSilence()">
+                <span class="btn-icon">▶</span> Analyze Silence
+            </button>
         </div>
 
-        <!-- Loading Indicator -->
-        <div id="loadingIndicator" class="loading-indicator" style="display: none;">
-            <sp-icon class="spinner"></sp-icon>
-            <p>Analyzing your project...</p>
+        <!-- B-Roll Panel -->
+        <div class="panel-content" id="panel-broll">
+            <p class="panel-desc">AI identifies moments where B-roll footage would strengthen your story. Each suggestion is added as a labeled marker.</p>
+
+            <div class="field-group">
+                <label class="field-label">Confidence Threshold</label>
+                <div class="range-row">
+                    <input type="range" id="confidenceThreshold" class="range-input"
+                           min="0.5" max="0.95" value="0.7" step="0.05"
+                           oninput="UIController.updateRangeDisplay('confidenceThreshold', this.value, '')">
+                    <span class="range-value" id="confidenceThreshold-val">0.70</span>
+                </div>
+            </div>
+
+            <button class="cta-btn" onclick="UIController.detectBroll()">
+                <span class="btn-icon">▶</span> Detect B-Roll
+            </button>
         </div>
 
-        <!-- Error Message (Hidden by default) -->
-        <div id="errorMessage" class="error-message" style="display: none;">
-            <sp-icon-alert-circle size="m"></sp-icon-alert-circle>
-            <p id="errorText"></p>
+        <!-- Config Panel -->
+        <div class="panel-content" id="panel-config">
+            <div class="field-group">
+                <label class="field-label">Gemini API Key</label>
+                <div class="key-row">
+                    <input type="password" id="apiKeyInput" class="text-input"
+                           placeholder="AIzaSy…"
+                           autocomplete="off"
+                           oninput="UIController.onApiKeyInput()">
+                    <button class="icon-btn" id="toggleKeyBtn"
+                            onclick="UIController.toggleApiKeyVisibility()"
+                            title="Show / hide key">👁</button>
+                </div>
+                <span class="field-hint">Free key → aistudio.google.com</span>
+            </div>
+
+            <button class="secondary-btn" onclick="UIController.saveSettings()">
+                Save Settings
+            </button>
+
+            <div class="divider"></div>
+
+            <label class="toggle-row">
+                <input type="checkbox" id="enableDebug" class="toggle-input"
+                       onchange="UIController.toggleDebugMode()">
+                <span class="toggle-label">Debug Mode</span>
+            </label>
+
+            <div class="divider"></div>
+
+            <button class="secondary-btn" onclick="UIController.runDiagnostic()">
+                Run Diagnostic
+            </button>
+            <div id="diagnosticOut" class="diagnostic-out" style="display:none"></div>
         </div>
 
-        <!-- Footer -->
-        <div class="panel-footer">
-            <p class="version">v0.1.0</p>
-            <p class="help-text">Need help? Check the documentation.</p>
-        </div>
-    </sp-body>
+    </div><!-- /panels -->
 
-    <!-- Import Spectrum UXP components -->
-    <script src="https://opensource.adobe.com/spectrum-web-components/dist/spectrum-web-components.js"></script>
-    
-    <!-- Import core logic -->
-    <script src="js/utils/logger.js"></script>
-    <script src="js/utils/constants.js"></script>
-    <script src="js/utils/validators.js"></script>
-    <script src="js/ui/ui-state.js"></script>
-    <script src="js/ui/ui-controller.js"></script>
-    <script src="js/index.js"></script>
+    <!-- ── Results ── -->
+    <div id="resultsSection" class="results-section" style="display:none">
+        <div class="results-header">
+            <span class="results-title">◈ Analysis Results</span>
+            <button class="close-btn" onclick="UIController.discardResults()">✕</button>
+        </div>
+        <div class="results-list">
+            <div id="resultsList"></div>
+        </div>
+        <div class="results-actions">
+            <button class="cta-btn" onclick="UIController.applyEdits()">
+                <span class="btn-icon">+</span> Add Markers to Timeline
+            </button>
+            <button class="ghost-btn" onclick="UIController.discardResults()">Discard</button>
+        </div>
+    </div>
+
+    <!-- ── Loading ── -->
+    <div id="loadingIndicator" class="loading-overlay" style="display:none">
+        <div class="scanner-box">
+            <div class="scanner-bar"></div>
+        </div>
+        <p class="loading-text" id="loadingText">Analyzing…</p>
+    </div>
+
+    <!-- ── Error ── -->
+    <div id="errorMessage" class="error-bar" style="display:none">
+        <span class="error-icon">⚠</span>
+        <span id="errorText" class="error-text"></span>
+        <button class="close-btn" onclick="document.getElementById('errorMessage').style.display='none'">✕</button>
+    </div>
+
+    <!-- ── Footer ── -->
+    <div class="footer">VLOG AI v0.1.0</div>
+
+</div><!-- /panel -->
+
+<!-- ── Scripts (dependency order) ── -->
+<script src="js/utils/logger.js"></script>
+<script src="js/utils/constants.js"></script>
+<script src="js/utils/validators.js"></script>
+<script src="js/utils/error-handler.js"></script>
+<script src="js/core/premiere-api.js"></script>
+<script src="js/core/project-reader.js"></script>
+<script src="js/core/timeline-editor.js"></script>
+<script src="js/ai/prompt-templates.js"></script>
+<script src="js/ai/response-parser.js"></script>
+<script src="js/ai/gemini-service.js"></script>
+<script src="js/ui/ui-state.js"></script>
+<script src="js/ui/ui-controller.js"></script>
+<script src="js/index.js"></script>
 </body>
 </html>

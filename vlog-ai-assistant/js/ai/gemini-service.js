@@ -1,158 +1,102 @@
-﻿/* gemini-service.js - Gemini API client and request handler */
+/* gemini-service.js - Gemini API client with retry and timeout */
 
 const GeminiService = {
     apiKey: '',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/models',
-    
-    /**
-     * Initialize with API key
-     * @param {string} key - Gemini API key
-     */
+
     initialize(key) {
         this.apiKey = key;
         Logger.debug('Gemini service initialized');
     },
-    
+
     /**
-     * Send request to Gemini API with retry logic
-     * @param {string} model - Model name (e.g., 'gemini-2.0-flash')
-     * @param {object} requestBody - Request payload
-     * @param {number} retryCount - Current retry attempt
+     * Send a request to the Gemini API with retry and AbortController-based timeout.
+     * @param {string} model
+     * @param {object} requestBody
+     * @param {number} retryCount
      * @returns {Promise<object>}
      */
     async sendRequest(model, requestBody, retryCount = 0) {
+        if (!this.apiKey) throw new Error('API key not configured');
+
+        const url = `${this.baseUrl}/${model}:generateContent?key=${this.apiKey}`;
+        Logger.debug(`Sending request to Gemini (attempt ${retryCount + 1})...`);
+
+        const controller = new AbortController();
+        const timeoutId  = setTimeout(() => controller.abort(), CONSTANTS.API_TIMEOUT);
+
         try {
-            if (!this.apiKey) {
-                throw new Error('API key not configured');
-            }
-            
-            const url = \\/\:generateContent?key=\\;
-            
-            Logger.debug(\Sending request to \...\);
-            
             const response = await fetch(url, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(requestBody),
-                timeout: CONSTANTS.API_TIMEOUT,
+                method:  'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body:    JSON.stringify(requestBody),
+                signal:  controller.signal,
             });
-            
+
+            clearTimeout(timeoutId);
+
             if (!response.ok) {
-                throw new Error(\API error: \ \\);
+                const err = new Error(`API error: ${response.status} ${response.statusText}`);
+                err.status = response.status;
+                throw err;
             }
-            
+
             const data = await response.json();
             Logger.debug('API response received');
             return data;
+
         } catch (error) {
-            if (retryCount < CONSTANTS.MAX_RETRIES) {
+            clearTimeout(timeoutId);
+
+            if (error.name === 'AbortError') {
+                const timeoutErr = new Error('Request timed out after ' + (CONSTANTS.API_TIMEOUT / 1000) + 's');
+                timeoutErr.message = 'timeout';
+                throw timeoutErr;
+            }
+
+            if (retryCount < CONSTANTS.MAX_RETRIES && !error.status) {
                 const delay = Math.pow(2, retryCount) * CONSTANTS.RETRY_DELAY;
-                Logger.warn(\Retry attempt \/\ after \ms\);
-                
+                Logger.warn(`Retry ${retryCount + 1}/${CONSTANTS.MAX_RETRIES} after ${delay}ms`);
                 await new Promise(resolve => setTimeout(resolve, delay));
                 return this.sendRequest(model, requestBody, retryCount + 1);
-            } else {
-                Logger.error('Max retries exceeded', error);
-                throw error;
             }
+
+            Logger.error('Gemini request failed', error);
+            throw error;
         }
     },
-    
-    /**
-     * Analyze audio for silence detection
-     * @param {object} projectMetadata
-     * @param {number} threshold
-     * @param {number} minDuration
-     * @returns {Promise<object>}
-     */
+
     async analyzeSilence(projectMetadata, threshold, minDuration) {
-        try {
-            Logger.info('Requesting silence analysis from Gemini...');
-            
-            const prompt = PromptTemplates.getSilenceDetectionPrompt(
-                projectMetadata,
-                threshold,
-                minDuration
-            );
-            
-            const requestBody = {
-                contents: [{
-                    parts: [{
-                        text: prompt,
-                    }],
-                }],
-            };
-            
-            const response = await this.sendRequest('gemini-2.0-flash', requestBody);
-            return response;
-        } catch (error) {
-            Logger.error('Silence analysis failed', error);
-            throw error;
-        }
+        Logger.info('Requesting silence analysis from Gemini...');
+        const prompt = PromptTemplates.getSilenceDetectionPrompt(projectMetadata, threshold, minDuration);
+        const response = await this.sendRequest('gemini-2.0-flash', {
+            system_instruction: { parts: [{ text: PromptTemplates.getSystemInstruction() }] },
+            contents: [{ parts: [{ text: prompt }] }],
+        });
+        return response;
     },
-    
-    /**
-     * Detect B-roll opportunities
-     * @param {object} projectMetadata
-     * @param {number} confidenceThreshold
-     * @returns {Promise<object>}
-     */
+
     async detectBroll(projectMetadata, confidenceThreshold) {
-        try {
-            Logger.info('Requesting B-roll detection from Gemini...');
-            
-            const prompt = PromptTemplates.getBrollDetectionPrompt(
-                projectMetadata,
-                confidenceThreshold
-            );
-            
-            const requestBody = {
-                contents: [{
-                    parts: [{
-                        text: prompt,
-                    }],
-                }],
-            };
-            
-            const response = await this.sendRequest('gemini-2.0-flash', requestBody);
-            return response;
-        } catch (error) {
-            Logger.error('B-roll detection failed', error);
-            throw error;
-        }
+        Logger.info('Requesting B-roll detection from Gemini...');
+        const prompt = PromptTemplates.getBrollDetectionPrompt(projectMetadata, confidenceThreshold);
+        const response = await this.sendRequest('gemini-2.0-flash', {
+            system_instruction: { parts: [{ text: PromptTemplates.getSystemInstruction() }] },
+            contents: [{ parts: [{ text: prompt }] }],
+        });
+        return response;
     },
-    
-    /**
-     * Generate captions for content
-     * @param {object} projectMetadata
-     * @returns {Promise<object>}
-     */
+
     async generateCaptions(projectMetadata) {
-        try {
-            Logger.info('Requesting caption generation from Gemini...');
-            
-            const prompt = PromptTemplates.getCaptionGenerationPrompt(projectMetadata);
-            
-            const requestBody = {
-                contents: [{
-                    parts: [{
-                        text: prompt,
-                    }],
-                }],
-            };
-            
-            const response = await this.sendRequest('gemini-2.0-flash', requestBody);
-            return response;
-        } catch (error) {
-            Logger.error('Caption generation failed', error);
-            throw error;
-        }
+        Logger.info('Requesting caption generation from Gemini...');
+        const prompt = PromptTemplates.getCaptionGenerationPrompt(projectMetadata);
+        const response = await this.sendRequest('gemini-2.0-flash', {
+            system_instruction: { parts: [{ text: PromptTemplates.getSystemInstruction() }] },
+            contents: [{ parts: [{ text: prompt }] }],
+        });
+        return response;
     },
 };
 
-// Export for use in other modules
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = GeminiService;
 }

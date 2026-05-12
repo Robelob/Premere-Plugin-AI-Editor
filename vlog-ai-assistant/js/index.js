@@ -12,13 +12,13 @@ function initializePlugin() {
         // Initialize UI controller
         UIController.init();
         
-        // Check if Premiere context is available
-        if (typeof app !== 'undefined' && app && app.project) {
-            Logger.info('Connected to Adobe Premiere Pro');
-            UIController.updateStatus('ready', 'Ready to analyze. Open a sequence to begin.');
+        // Check if Premiere Pro API is available via UXP module
+        if (PremiereAPI.isAvailable()) {
+            Logger.info('Connected to Premiere Pro via UXP module');
+            UIController.updateStatus('ready', 'READY');
         } else {
-            Logger.warn('Premiere Pro context not available - running in limited mode');
-            UIController.updateStatus('ready', 'Waiting for Premiere Pro context...');
+            Logger.warn('premierepro module unavailable — load plugin inside Premiere Pro');
+            UIController.updateStatus('error', 'NO PREMIERE CONTEXT');
         }
         
         // Save settings when they change

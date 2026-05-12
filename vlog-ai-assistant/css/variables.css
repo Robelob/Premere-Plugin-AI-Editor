@@ -1,50 +1,49 @@
-﻿/* Spectrum UXP Color Variables */
+/* Dark Sci-Fi Design Tokens */
 :root {
-    /* Primary Colors */
-    --spectrum-global-color-blue-400: #0078d4;
-    --spectrum-global-color-blue-500: #106ebe;
-    --spectrum-global-color-blue-600: #005a9c;
-    
-    /* Gray Scale */
-    --spectrum-global-color-gray-75: #fafafa;
-    --spectrum-global-color-gray-100: #f5f5f5;
-    --spectrum-global-color-gray-200: #eaeaea;
-    --spectrum-global-color-gray-300: #e1e1e1;
-    --spectrum-global-color-gray-400: #d3d3d3;
-    --spectrum-global-color-gray-500: #bebebe;
-    --spectrum-global-color-gray-600: #a8a8a8;
-    --spectrum-global-color-gray-700: #949494;
-    --spectrum-global-color-gray-800: #808080;
-    --spectrum-global-color-gray-900: #505050;
-    
-    /* Status Colors */
-    --spectrum-semantic-green-500: #16a34a;
-    --spectrum-semantic-red-500: #dc2626;
-    --spectrum-semantic-yellow-500: #ea8c55;
-    
-    /* Spacing */
-    --spectrum-spacing-100: 4px;
-    --spectrum-spacing-200: 8px;
-    --spectrum-spacing-300: 12px;
-    --spectrum-spacing-400: 16px;
-    --spectrum-spacing-500: 20px;
-    --spectrum-spacing-600: 24px;
-    --spectrum-spacing-700: 32px;
-    --spectrum-spacing-800: 40px;
-    
-    /* Typography */
-    --spectrum-font-size-75: 11px;
-    --spectrum-font-size-100: 12px;
-    --spectrum-font-size-200: 14px;
-    --spectrum-font-size-300: 16px;
-    --spectrum-font-size-400: 18px;
-    --spectrum-font-size-500: 20px;
-    --spectrum-font-size-600: 24px;
-    
-    /* Border Radius */
-    --spectrum-border-radius: 4px;
-    
-    /* Shadows */
-    --spectrum-shadow-md: 0 2px 8px rgba(0, 0, 0, 0.12);
-    --spectrum-shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.15);
+    /* ── Backgrounds ── */
+    --bg:          #06080f;
+    --bg-surface:  #090d1a;
+    --bg-card:     #0d1221;
+    --bg-elevated: #121828;
+    --bg-hover:    #192035;
+
+    /* ── Primary accent: electric cyan ── */
+    --cyan:        #00e5ff;
+    --cyan-faint:  rgba(0, 229, 255, 0.06);
+    --cyan-dim:    rgba(0, 229, 255, 0.14);
+    --cyan-mid:    rgba(0, 229, 255, 0.30);
+    --glow-xs:     0 0 6px  rgba(0, 229, 255, 0.25);
+    --glow-sm:     0 0 10px rgba(0, 229, 255, 0.35);
+    --glow-md:     0 0 20px rgba(0, 229, 255, 0.50);
+
+    /* ── Status / semantic ── */
+    --green:       #00ff88;
+    --green-dim:   rgba(0, 255, 136, 0.15);
+    --red:         #ff3d3d;
+    --red-dim:     rgba(255, 61, 61, 0.15);
+    --yellow:      #ffd700;
+    --yellow-dim:  rgba(255, 215, 0, 0.15);
+    --purple:      #a855f7;
+
+    /* ── Text ── */
+    --text:        #aabfd4;
+    --text-bright: #ddeaf6;
+    --text-dim:    #2e4060;
+    --text-cyan:   var(--cyan);
+
+    /* ── Borders ── */
+    --border:        rgba(0, 229, 255, 0.07);
+    --border-mid:    rgba(0, 229, 255, 0.20);
+    --border-active: rgba(0, 229, 255, 0.55);
+
+    /* ── Typography ── */
+    --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace;
+    --font-ui:   -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+
+    /* ── Spacing ── */
+    --s1: 4px;   --s2: 8px;   --s3: 12px;
+    --s4: 16px;  --s5: 20px;  --s6: 24px;
+
+    /* ── Radius ── */
+    --r1: 2px;   --r2: 4px;   --r3: 8px;
 }

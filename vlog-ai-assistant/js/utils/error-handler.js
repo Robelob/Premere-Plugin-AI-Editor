@@ -41,32 +41,38 @@ const ErrorHandler = {
     handleAPIError(error) {
         Logger.error('API error:', error);
         
-        if (error?.status === 429) {
+        var msg = (error && error.message) ? error.message : String(error || '');
+        var status = (error && error.status) ? error.status : 0;
+        if (!status) {
+            var m = msg.match(/\b(4\d\d|5\d\d)\b/);
+            if (m) status = parseInt(m[1], 10);
+        }
+
+        if (status === 429 || msg.indexOf('429') !== -1) {
             return {
                 type: 'rate_limit',
-                userMessage: 'API rate limit reached. Please try again in a moment.',
+                userMessage: 'Rate limit reached — wait 60 seconds and try again. (Free tier: 15 req/min)',
                 code: 'API_RATE_LIMIT',
-                retryAfter: error.retryAfter,
             };
         }
-        
-        if (error?.status === 401 || error?.status === 403) {
+
+        if (status === 401 || status === 403 || msg.indexOf('401') !== -1 || msg.indexOf('403') !== -1) {
             return {
                 type: 'auth_error',
-                userMessage: 'Invalid API key. Please check your settings.',
+                userMessage: 'Invalid API key. Check the key in the Config tab.',
                 code: 'API_AUTH_ERROR',
             };
         }
-        
-        if (error?.status === 400) {
+
+        if (status === 400 || msg.indexOf('400') !== -1) {
             return {
                 type: 'validation_error',
-                userMessage: 'Invalid request. Please check your settings.',
+                userMessage: 'Invalid request sent to Gemini. Check your settings.',
                 code: 'API_VALIDATION_ERROR',
             };
         }
         
-        if (error?.message?.includes('timeout')) {
+        if (error && error.message && error.message.includes('timeout')) {
             return {
                 type: 'timeout',
                 userMessage: 'Request timeout. Please try again.',
@@ -88,11 +94,11 @@ const ErrorHandler = {
      * @returns {object}
      */
     handleValidationError(field, value) {
-        Logger.warn(\Validation error in \: \\);
+        Logger.warn('Validation error in ' + field + ': ' + value);
         
         return {
             type: 'validation',
-            userMessage: \Invalid value for \\,
+            userMessage: 'Invalid value for ' + field,
             code: 'VALIDATION_ERROR',
             field,
         };
@@ -113,7 +119,7 @@ const ErrorHandler = {
      * @param {Error|string} error
      */
     logError(context, error) {
-        Logger.error(\[\] \\);
+        Logger.error('[' + context + '] ' + (error instanceof Error ? error.message : String(error)));
         if (error instanceof Error && error.stack) {
             Logger.debug(error.stack);
         }

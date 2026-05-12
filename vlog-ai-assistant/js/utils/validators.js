@@ -7,7 +7,7 @@ const Validators = {
      */
     hasActiveSequence() {
         try {
-            return app && app.project && app.project.activeSequence !== null;
+            return !!PremiereAPI.getActiveSequence();
         } catch (e) {
             Logger.error('Error checking active sequence', e);
             return false;

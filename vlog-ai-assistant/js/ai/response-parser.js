@@ -14,7 +14,7 @@ const ResponseParser = {
             }
             
             const candidate = apiResponse.candidates[0];
-            const text = candidate.content?.parts?.[0]?.text || '';
+            const text = (candidate.content && candidate.content.parts && candidate.content.parts[0] ? candidate.content.parts[0].text : '') || '';
             
             // Extract JSON from response (may be wrapped in markdown code blocks)
             const jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -39,7 +39,7 @@ const ResponseParser = {
                        segment.confidence >= 0 && segment.confidence <= 1;
             });
             
-            Logger.info(\Parsed \ silence segments\);
+            Logger.info('Parsed ' + validated.length + ' silence segments');
             
             return {
                 segments: validated,
@@ -65,7 +65,7 @@ const ResponseParser = {
             }
             
             const candidate = apiResponse.candidates[0];
-            const text = candidate.content?.parts?.[0]?.text || '';
+            const text = (candidate.content && candidate.content.parts && candidate.content.parts[0] ? candidate.content.parts[0].text : '') || '';
             
             const jsonMatch = text.match(/\{[\s\S]*\}/);
             if (!jsonMatch) {
@@ -88,7 +88,7 @@ const ResponseParser = {
                        opp.confidence >= 0 && opp.confidence <= 1;
             });
             
-            Logger.info(\Parsed \ B-roll opportunities\);
+            Logger.info('Parsed ' + validated.length + ' B-roll opportunities');
             
             return {
                 opportunities: validated,
@@ -113,7 +113,7 @@ const ResponseParser = {
             }
             
             const candidate = apiResponse.candidates[0];
-            const text = candidate.content?.parts?.[0]?.text || '';
+            const text = (candidate.content && candidate.content.parts && candidate.content.parts[0] ? candidate.content.parts[0].text : '') || '';
             
             const jsonMatch = text.match(/\{[\s\S]*\}/);
             if (!jsonMatch) {
@@ -135,7 +135,7 @@ const ResponseParser = {
                        cap.text && typeof cap.text === 'string';
             });
             
-            Logger.info(\Parsed \ captions\);
+            Logger.info('Parsed ' + validated.length + ' captions');
             
             return {
                 captions: validated,
@@ -153,10 +153,10 @@ const ResponseParser = {
      * @returns {string|null} Error message if error exists
      */
     getErrorMessage(apiResponse) {
-        if (apiResponse?.error) {
+        if (apiResponse && apiResponse.error) {
             return apiResponse.error.message || 'Unknown API error';
         }
-        if (!apiResponse?.candidates) {
+        if (!apiResponse || !apiResponse.candidates) {
             return 'Invalid API response format';
         }
         return null;

@@ -3,12 +3,13 @@
 const UIState = {
     // Current state
     state: {
-        status: 'ready', // 'ready', 'analyzing', 'success', 'error'
-        statusMessage: 'Ready',
+        status: 'ready',
+        statusMessage: 'READY',
         isLoading: false,
         results: null,
         error: null,
         debugEnabled: false,
+        selectedSequenceId: null,
         settings: {
             silenceThreshold: -50,
             minSilenceDuration: 500,
@@ -24,7 +25,7 @@ const UIState = {
      */
     setState(key, value) {
         this.state[key] = value;
-        Logger.debug(\State updated: \ = \\);
+        Logger.debug('State updated: ' + key + ' = ' + JSON.stringify(value));
     },
     
     /**
@@ -44,7 +45,7 @@ const UIState = {
     setStatus(status, message) {
         this.state.status = status;
         this.state.statusMessage = message;
-        Logger.info(\Status: \ - \\);
+        Logger.info('Status: ' + status + ' - ' + message);
     },
     
     /**
@@ -81,7 +82,7 @@ const UIState = {
     updateSetting(key, value) {
         if (this.state.settings.hasOwnProperty(key)) {
             this.state.settings[key] = value;
-            Logger.debug(\Setting updated: \ = \\);
+            Logger.debug('Setting updated: ' + key + ' = ' + JSON.stringify(value));
         }
     },
     
