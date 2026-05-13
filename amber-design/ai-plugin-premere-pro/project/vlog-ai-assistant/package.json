@@ -1,0 +1,30 @@
+﻿{
+  \"name\": \"premiere-ai-assistant\",
+  \"version\": \"0.1.0\",
+  \"description\": \"AI-powered vlog editing assistant for Adobe Premiere Pro\",
+  \"main\": \"index.html\",
+  \"scripts\": {
+    \"lint\": \"eslint js/\",
+    \"format\": \"prettier --write 'js/**/*.js' 'css/**/*.css'\",
+    \"build\": \"echo 'Build process not needed for UXP plugins'\",
+    \"test\": \"echo 'Testing framework TBD'\"
+  },
+  \"keywords\": [
+    \"adobe\",
+    \"premiere-pro\",
+    \"uxp\",
+    \"plugin\",
+    \"ai\",
+    \"video-editing\",
+    \"gemini\"
+  ],
+  \"author\": \"Your Name\",
+  \"license\": \"MIT\",
+  \"devDependencies\": {
+    \"eslint\": \"^8.0.0\",
+    \"prettier\": \"^3.0.0\"
+  },
+  \"engines\": {
+    \"node\": \">=16.0.0\"
+  }
+}

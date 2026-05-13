@@ -7,8 +7,7 @@
     "requiredPermissions": {
         "network": {
             "domains": "all"
-        },
-        "localFileSystem": "fullAccess"
+        }
     },
     "host": {
         "app": "premierepro",

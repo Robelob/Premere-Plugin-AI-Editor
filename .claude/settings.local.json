@@ -3,7 +3,9 @@
     "allow": [
       "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\Robel\\\\Desktop\\\\AI PLUGIN\" -Recurse -Force)",
       "Bash(Select-Object FullName, PSIsContainer)",
-      "Bash(Sort-Object FullName)"
+      "Bash(Sort-Object FullName)",
+      "WebFetch(domain:api.anthropic.com)",
+      "PowerShell(Get-ChildItem \"c:\\\\Users\\\\Robel\\\\Desktop\\\\AI PLUGIN\\\\vlog-ai-assistant\\\\css\" | ForEach-Object { $lines = \\(Get-Content $_.FullName | Measure-Object -Line\\).Lines; Write-Host \"$\\($_.Name\\): $lines lines\" })"
     ]
   }
 }

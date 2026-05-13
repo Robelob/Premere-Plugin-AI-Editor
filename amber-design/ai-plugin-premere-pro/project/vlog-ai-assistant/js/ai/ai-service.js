@@ -1,64 +1,51 @@
 /* ai-service.js - Universal AI provider client
  *
  * Supported providers:
- *   'ollama'           - Ollama local server (http://localhost:11434) — no API key needed
- *   'openai-compatible' - Any OpenAI-format endpoint (Groq, Mistral, OpenRouter, LM Studio, etc.)
- *   'gemini'           - Google Gemini
- *   'openai'           - OpenAI GPT
- *   'anthropic'        - Anthropic Claude
+ *   'gemini'           - Google Gemini (generativelanguage.googleapis.com)
+ *   'openai'           - OpenAI GPT (api.openai.com)
+ *   'anthropic'        - Anthropic Claude (api.anthropic.com)
+ *   'openai-compatible' - Any OpenAI-format endpoint (Groq, Mistral, OpenRouter, etc.)
  *
  * All providers return a normalized { text: string } from sendPrompt().
  */
 
 const AIService = {
-    provider: 'ollama',
+    provider: 'gemini',
     apiKey:   '',
     model:    '',
     baseUrl:  '',
 
     initialize(config) {
-        this.provider = config.provider || 'ollama';
+        this.provider = config.provider || 'gemini';
         this.apiKey   = config.apiKey   || '';
         this.model    = config.model    || '';
         this.baseUrl  = config.baseUrl  || '';
         Logger.debug('AI service: provider=' + this.provider + ' model=' + this._model());
     },
 
-    _isLocal() {
-        return this.provider === 'ollama';
-    },
-
     _defaultModel() {
         var defaults = {
-            'ollama':            'llama3.2',
             'gemini':            'gemini-2.0-flash',
             'openai':            'gpt-4o-mini',
             'anthropic':         'claude-haiku-4-5-20251001',
-            'openai-compatible': 'llama3.2',
+            'openai-compatible': 'llama-3.3-70b-versatile',
         };
-        return defaults[this.provider] || 'llama3.2';
+        return defaults[this.provider] || 'gpt-4o-mini';
     },
 
     _model() { return this.model || this._defaultModel(); },
-
-    _baseUrl() {
-        if (this.provider === 'openai')  return 'https://api.openai.com/v1';
-        if (this.provider === 'ollama')  return this.baseUrl || 'http://localhost:11434/v1';
-        return this.baseUrl || 'http://localhost:11434/v1';
-    },
 
     // ── Public unified interface ──────────────────────────────────────
     // Always resolves to { text: string }
 
     async sendPrompt(systemPrompt, userPrompt) {
-        // Ollama and openai-compatible endpoints work without a key (e.g. LM Studio)
-        var noKeyOk = this.provider === 'ollama' || this.provider === 'openai-compatible';
-        if (!this.apiKey && !noKeyOk) throw new Error('API key not configured');
+        if (!this.apiKey) throw new Error('API key not configured');
         var p = this.provider;
         if (p === 'gemini')             return await this._sendGemini(systemPrompt, userPrompt);
+        if (p === 'openai')             return await this._sendOpenAI(systemPrompt, userPrompt, 'https://api.openai.com/v1');
         if (p === 'anthropic')          return await this._sendAnthropic(systemPrompt, userPrompt);
-        // ollama + openai + openai-compatible all use the same OpenAI chat format
-        return await this._sendOpenAI(systemPrompt, userPrompt, this._baseUrl());
+        if (p === 'openai-compatible')  return await this._sendOpenAI(systemPrompt, userPrompt, this.baseUrl || 'https://api.openai.com/v1');
+        throw new Error('Unknown provider: ' + p);
     },
 
     // ── Provider implementations ──────────────────────────────────────
@@ -80,13 +67,11 @@ const AIService = {
     },
 
     async _sendOpenAI(system, user, baseUrl) {
-        // Ollama and some local servers accept any bearer value (or none)
-        var authHeader = this.apiKey ? ('Bearer ' + this.apiKey) : 'Bearer ollama';
         var data = await this._fetch(baseUrl + '/chat/completions', {
             method:  'POST',
             headers: {
                 'Content-Type':  'application/json',
-                'Authorization': authHeader,
+                'Authorization': 'Bearer ' + this.apiKey,
             },
             body: JSON.stringify({
                 model:       this._model(),
@@ -129,10 +114,7 @@ const AIService = {
         var self = this;
         retryCount = retryCount || 0;
         var controller = new AbortController();
-        // Local inference (Ollama, LM Studio) needs more time than cloud APIs
-        var isLocal = this.provider === 'ollama' || this.provider === 'openai-compatible';
-        var timeout  = isLocal ? 180000 : CONSTANTS.API_TIMEOUT; // 3 min local, 30s cloud
-        var timeoutId  = setTimeout(function() { controller.abort(); }, timeout);
+        var timeoutId  = setTimeout(function() { controller.abort(); }, CONSTANTS.API_TIMEOUT);
         try {
             var res = await fetch(url, Object.assign({}, options, { signal: controller.signal }));
             clearTimeout(timeoutId);
@@ -145,11 +127,9 @@ const AIService = {
         } catch (error) {
             clearTimeout(timeoutId);
             if (error.name === 'AbortError') {
-                var te = new Error('Request timed out after ' + Math.round(timeout / 1000) + 's — is ' + (isLocal ? 'Ollama' : 'the API') + ' running?');
-                te.isTimeout = true;
-                throw te;
+                var te = new Error('timeout'); te.message = 'timeout'; throw te;
             }
-            if (retryCount < CONSTANTS.MAX_RETRIES && !error.status && !error.isTimeout) {
+            if (retryCount < CONSTANTS.MAX_RETRIES && !error.status) {
                 var delay = Math.pow(2, retryCount) * CONSTANTS.RETRY_DELAY;
                 Logger.warn('AI retry ' + (retryCount + 1) + '/' + CONSTANTS.MAX_RETRIES + ' in ' + delay + 'ms');
                 await new Promise(function(r) { setTimeout(r, delay); });
@@ -161,14 +141,6 @@ const AIService = {
     },
 
     // ── Analysis methods (called by UIController) ─────────────────────
-
-    async analyzeSequence(summary) {
-        Logger.info('FCPXML analysis via ' + this.provider + '/' + this._model());
-        return await this.sendPrompt(
-            'You are Ambar, a professional vlog editor. Analyze video sequences and return edit decisions as valid JSON only. No explanations outside the JSON block.',
-            PromptTemplates.getFcpxmlAnalysisPrompt(summary)
-        );
-    },
 
     async analyzeSilence(projectMetadata, threshold, minDuration) {
         Logger.info('Silence analysis via ' + this.provider + '/' + this._model());

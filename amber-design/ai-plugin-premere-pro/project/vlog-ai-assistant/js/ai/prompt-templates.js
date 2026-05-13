@@ -102,36 +102,6 @@ const PromptTemplates = {
             '}';
     },
 
-    getFcpxmlAnalysisPrompt: function(summary) {
-        return summary + '\n\n' +
-            '━━━ TASK ━━━\n' +
-            'You are Ambar, a professional vlog editor. Analyze the sequence above and produce 5–20 edit decisions.\n\n' +
-            'Decision types:\n' +
-            '• "cut"   — remove silence, filler words, dead air, or repetition in the A-roll\n' +
-            '• "broll" — place B-roll over a section (only suggest clips listed under AVAILABLE B-ROLL)\n' +
-            '• "story" — reorder, restructure, or tighten for better narrative flow\n\n' +
-            'Respond ONLY with valid JSON — no text before or after the JSON block:\n' +
-            '{\n' +
-            '  "summary": "2-3 sentence story assessment and pacing note",\n' +
-            '  "decisions": [\n' +
-            '    {\n' +
-            '      "type": "cut",\n' +
-            '      "description": "Short specific action label",\n' +
-            '      "timelineOffset": 45.2,\n' +
-            '      "duration": 3.1,\n' +
-            '      "confidence": 0.92,\n' +
-            '      "reason": "Why this edit improves the video"\n' +
-            '    }\n' +
-            '  ]\n' +
-            '}\n\n' +
-            'Rules:\n' +
-            '- timelineOffset and duration are in seconds (float)\n' +
-            '- confidence is 0.0–1.0\n' +
-            '- Order decisions by impact (highest first)\n' +
-            '- For broll decisions, name the specific asset from AVAILABLE B-ROLL in the description\n' +
-            '- type must be exactly "cut", "broll", or "story"';
-    },
-
     getSystemInstruction() {
         return 'You are an AI video editing assistant specialized in vlog optimization.\n' +
             'Your role is to:\n' +

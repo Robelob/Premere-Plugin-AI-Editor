@@ -11,13 +11,10 @@ const UIState = {
         debugEnabled: false,
         selectedSequenceId: null,
         settings: {
-            silenceThreshold:    -50,
-            minSilenceDuration:  500,
+            silenceThreshold: -50,
+            minSilenceDuration: 500,
             confidenceThreshold: 0.7,
-            provider: 'ollama',
-            apiKey:   '',
-            model:    '',
-            baseUrl:  'http://localhost:11434/v1',
+            apiKey: '',
         },
     },
     
@@ -83,8 +80,10 @@ const UIState = {
      * @param {*} value - Setting value
      */
     updateSetting(key, value) {
-        this.state.settings[key] = value;
-        Logger.debug('Setting updated: ' + key + ' = ' + JSON.stringify(value));
+        if (this.state.settings.hasOwnProperty(key)) {
+            this.state.settings[key] = value;
+            Logger.debug('Setting updated: ' + key + ' = ' + JSON.stringify(value));
+        }
     },
     
     /**

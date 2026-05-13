@@ -67,15 +67,15 @@ const ErrorHandler = {
         if (status === 400 || msg.indexOf('400') !== -1) {
             return {
                 type: 'validation_error',
-                userMessage: 'Invalid request. Check your provider settings.',
+                userMessage: 'Invalid request sent to Gemini. Check your settings.',
                 code: 'API_VALIDATION_ERROR',
             };
         }
-
-        if ((error && error.isTimeout) || msg.indexOf('timed out') !== -1 || msg.indexOf('timeout') !== -1) {
+        
+        if (error && error.message && error.message.includes('timeout')) {
             return {
                 type: 'timeout',
-                userMessage: msg.indexOf('timed out') !== -1 ? msg : 'Request timed out — check that Ollama is running.',
+                userMessage: 'Request timeout. Please try again.',
                 code: 'API_TIMEOUT',
             };
         }

@@ -14,13 +14,8 @@ const CONSTANTS = {
     DEBUG: false,
     LOG_LEVEL: 'info', // 'debug', 'info', 'warn', 'error'
     
-    // AI Provider ('gemini' | 'openai' | 'anthropic' | 'ollama')
-    AI_PROVIDER: 'gemini',
-    AI_MODEL: '', // blank = use provider default
-    OLLAMA_URL: 'http://localhost:11434',
-
     // API Configuration
-    API_TIMEOUT: 60000, // milliseconds — long enough for FCPXML analysis
+    API_TIMEOUT: 30000, // milliseconds
     MAX_RETRIES: 3,
     RETRY_DELAY: 1000, // milliseconds
     
@@ -47,8 +42,7 @@ const CONSTANTS = {
         SUCCESS: 'Operation completed successfully.',
     },
     
-    // Plugin name and version
-    NAME: 'Ambar',
+    // Plugin Version
     VERSION: '0.1.0',
 };
 

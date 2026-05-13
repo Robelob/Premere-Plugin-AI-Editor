@@ -7,10 +7,22 @@ const UIController = {
     init() {
         Logger.info('Initializing UI Controller');
         this.restoreSettings();
+        this._updateProviderUI(this._getProvider());
         this.updateStatus('ready', 'READY');
+        this._initRangeDisplays();
         this._setupEventBasedDetection();
         this.refreshSequences();
         this._startSequencePoll();
+    },
+
+    _initRangeDisplays() {
+        var ranges = document.querySelectorAll('input[type="range"]');
+        for (var i = 0; i < ranges.length; i++) {
+            var el = ranges[i];
+            var unit = el.id === 'silenceThreshold' ? ' dB'
+                     : el.id === 'minSilenceDuration' ? ' ms' : '';
+            this.updateRangeDisplay(el.id, el.value, unit);
+        }
     },
 
     _setupEventBasedDetection() {
@@ -72,6 +84,20 @@ const UIController = {
     _getApiKey() {
         const el = document.getElementById('apiKeyInput');
         return (el ? el.value.trim() : '') || UIState.getSettings().apiKey || '';
+    },
+
+    _getBaseUrl() {
+        const el = document.getElementById('baseUrlInput');
+        return (el ? el.value.trim() : '') || UIState.getSettings().baseUrl || '';
+    },
+
+    _initAIService() {
+        AIService.initialize({
+            provider: this._getProvider(),
+            apiKey:   this._getApiKey(),
+            model:    this._getModel(),
+            baseUrl:  this._getBaseUrl(),
+        });
     },
 
     // ── Tab switching ─────────────────────────────────────────────────
@@ -172,18 +198,793 @@ const UIController = {
         const display = document.getElementById(id + '-val');
         if (!display) return;
         const num = parseFloat(value);
-        // For confidence show 2 decimals, otherwise integer
         const formatted = (unit === '') ? num.toFixed(2) : Math.round(num);
         display.textContent = formatted + unit;
+        // Update filled-track percentage for Ambar range CSS (--pct custom prop)
+        const rangeEl = document.getElementById(id);
+        if (rangeEl && rangeEl.type === 'range') {
+            const min = parseFloat(rangeEl.min) || 0;
+            const max = parseFloat(rangeEl.max) || 100;
+            const pct = ((num - min) / (max - min)) * 100;
+            rangeEl.style.setProperty('--pct', pct.toFixed(1) + '%');
+        }
     },
 
-    // ── API key ───────────────────────────────────────────────────────
+    // ── Provider / model / API key ────────────────────────────────────
+
+    _getProvider() {
+        const el = document.getElementById('aiProvider');
+        return (el ? el.value : '') || UIState.getSettings().aiProvider || 'ollama';
+    },
+
+    _getModel() {
+        const el = document.getElementById('aiModel');
+        return (el ? el.value.trim() : '') || UIState.getSettings().aiModel || '';
+    },
+
+    onProviderChange() {
+        const provider = this._getProvider();
+        UIState.updateSetting('aiProvider', provider);
+        CONSTANTS.AI_PROVIDER = provider;
+        this._updateProviderUI(provider);
+        this._initAIService();
+    },
+
+    onModelInput() {
+        const model = this._getModel();
+        UIState.updateSetting('aiModel', model);
+        AIService.model = model;
+    },
+
+    _updateProviderUI(provider) {
+        var PROVIDERS_LOCAL = {
+            'gemini':            { keyHint: 'Free key → aistudio.google.com',              keyPlaceholder: 'AIzaSy…',              defaultModel: 'gemini-2.0-flash',          needsKey: true,  needsUrl: false },
+            'openai':            { keyHint: 'Get key → platform.openai.com',               keyPlaceholder: 'sk-…',                 defaultModel: 'gpt-4o-mini',               needsKey: true,  needsUrl: false },
+            'anthropic':         { keyHint: 'Get key → console.anthropic.com',             keyPlaceholder: 'sk-ant-…',             defaultModel: 'claude-haiku-4-5-20251001', needsKey: true,  needsUrl: false },
+            'ollama':            { keyHint: 'No key needed — runs locally (ollama.com)',   keyPlaceholder: '(not required)',       defaultModel: 'llama3.2',                  needsKey: false, needsUrl: true  },
+            'openai-compatible': { keyHint: 'API key for your endpoint (optional for local)', keyPlaceholder: 'sk-… or leave blank', defaultModel: 'llama3.2',                  needsKey: true,  needsUrl: true  },
+        };
+        var cfg = PROVIDERS_LOCAL[provider] || PROVIDERS_LOCAL['ollama'];
+        var hintEl = document.getElementById('apiKeyHint');
+        var phEl   = document.getElementById('apiKeyInput');
+        var defEl  = document.getElementById('modelDefault');
+        var grpEl  = document.getElementById('apiKeyGroup');
+        var urlGrp = document.getElementById('baseUrlGroup');
+        if (hintEl) hintEl.textContent  = cfg.keyHint;
+        if (phEl)   phEl.placeholder    = cfg.keyPlaceholder;
+        if (defEl)  defEl.textContent   = '(default: ' + cfg.defaultModel + ')';
+        if (grpEl)  grpEl.style.display = cfg.needsKey ? '' : 'none';
+        if (urlGrp) urlGrp.style.display = cfg.needsUrl ? '' : 'none';
+        var labels = { gemini: 'Gemini', openai: 'OpenAI', anthropic: 'Claude', ollama: 'Ollama', 'openai-compatible': 'Custom AI' };
+        var sub = document.getElementById('headerSub');
+        if (sub) sub.textContent = 'Premiere Pro · ' + (labels[provider] || 'AI');
+    },
 
     onApiKeyInput() {
-        // Auto-save API key as user types (debounce via no timeout — just keep fresh)
-        const key = this._getApiKey();
-        UIState.updateSetting('apiKey', key);
-        if (key) GeminiService.initialize(key);
+        UIState.updateSetting('apiKey', this._getApiKey());
+        this._initAIService();
+    },
+
+    // ── FCPXML / SRT file loading ─────────────────────────────────────
+
+    // Opens the OS file picker via UXP storage API (works inside Premiere).
+    // Falls back to a programmatic <input type="file"> for browser testing.
+    openFcpxmlPicker: async function() {
+        var self = this;
+        try {
+            var result = await this._openFilePicker(['fcpxml', 'xml']);
+            if (result) self._processFcpxmlContent(result.name, result.content);
+        } catch (e) {
+            self.showError('Could not open file: ' + e.message);
+        }
+    },
+
+    openSrtPicker: async function() {
+        var self = this;
+        try {
+            var result = await this._openFilePicker(['srt', 'txt']);
+            if (result) self._processSrtContent(result.name, result.content);
+        } catch (e) {
+            self.showError('Could not open file: ' + e.message);
+        }
+    },
+
+    // Drag-and-drop handlers
+    onFcpxmlDrop: async function(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        var zone = document.getElementById('fcpxmlDropZone');
+        if (zone) zone.classList.remove('drag-over');
+
+        var file = this._getDroppedFile(event);
+        if (!file) { this.showError('No file received — try using the file picker instead.'); return; }
+        Logger.info('FCPXML drop: name=' + file.name + ' size=' + (file.size || '?'));
+
+        try {
+            var content = await this._readFileAsText(file);
+            this._processFcpxmlContent(file.name, content);
+        } catch (e) {
+            this.showError('Could not read file: ' + e.message);
+        }
+    },
+
+    onSrtDrop: async function(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        var zone = document.getElementById('srtDropZone');
+        if (zone) zone.classList.remove('drag-over');
+
+        var file = this._getDroppedFile(event);
+        if (!file) { this.showError('No file received — try using the file picker instead.'); return; }
+        Logger.info('SRT drop: name=' + file.name + ' size=' + (file.size || '?'));
+
+        try {
+            var content = await this._readFileAsText(file);
+            this._processSrtContent(file.name, content);
+        } catch (e) {
+            this.showError('Could not read file: ' + e.message);
+        }
+    },
+
+    // Extract the first file from a drop event — checks both .files and .items
+    _getDroppedFile: function(event) {
+        var dt = event.dataTransfer;
+        if (!dt) return null;
+        // Standard files array
+        if (dt.files && dt.files.length > 0) return dt.files[0];
+        // items API (some UXP versions)
+        if (dt.items && dt.items.length > 0) {
+            var item = dt.items[0];
+            if (item.kind === 'file') return item.getAsFile();
+        }
+        return null;
+    },
+
+    // Core processor — takes file name + text content (from any source)
+    _processFcpxmlContent: function(name, content) {
+        var self = this;
+        var zone     = document.getElementById('fcpxmlDropZone');
+        var label    = document.getElementById('fcpxmlLabel');
+        var sub      = document.getElementById('fcpxmlSub');
+        var filename = document.getElementById('fcpxmlFilename');
+        var icon     = document.getElementById('fcpxmlIcon');
+
+        try {
+            var parsed = FCPXMLParser.parse(content);
+            UIState.setState('fcpxmlParsed', parsed);
+            UIState.setState('fcpxmlRaw', content); // keep raw XML for export
+
+            if (zone)     { zone.classList.add('loaded'); }
+            if (icon)     { icon.textContent = '✅'; }
+            if (label)    { label.textContent = parsed.sequenceName || 'Sequence loaded'; }
+            if (sub)      { sub.style.display = 'none'; }
+            if (filename) { filename.textContent = name; filename.style.display = 'block'; }
+
+            Logger.info('FCPXML: ' + parsed.sequenceName +
+                ' | ' + parsed.clips.length + ' clips | ' +
+                FCPXMLParser.formatDuration(parsed.duration));
+
+            self._updateSummaryCard();
+            self._checkReadyToAnalyze();
+
+        } catch (e) {
+            Logger.error('FCPXML parse error', e);
+            if (zone)     { zone.classList.remove('loaded'); }
+            if (icon)     { icon.textContent = '❌'; }
+            if (label)    { label.textContent = 'Invalid FCPXML file'; }
+            if (sub)      { sub.textContent = e.message; sub.style.display = 'block'; }
+            self.showError('FCPXML parse error: ' + e.message);
+        }
+    },
+
+    _processSrtContent: function(name, content) {
+        var self = this;
+        var zone     = document.getElementById('srtDropZone');
+        var label    = document.getElementById('srtLabel');
+        var sub      = document.getElementById('srtSub');
+        var filename = document.getElementById('srtFilename');
+        var icon     = document.getElementById('srtIcon');
+
+        try {
+            var lines = SRTParser.parse(content);
+            if (lines.length === 0) {
+                throw new Error('No subtitle entries found — is this a valid SRT file?');
+            }
+            UIState.setState('srtParsed', lines);
+
+            if (zone)     { zone.classList.add('loaded'); }
+            if (icon)     { icon.textContent = '✅'; }
+            if (label)    { label.textContent = lines.length + ' subtitle lines loaded'; }
+            if (sub)      { sub.style.display = 'none'; }
+            if (filename) { filename.textContent = name; filename.style.display = 'block'; }
+
+            Logger.info('SRT: ' + lines.length + ' entries');
+            self._updateSummaryCard();
+            self._checkReadyToAnalyze();
+
+        } catch (e) {
+            Logger.error('SRT parse error', e);
+            if (zone)  { zone.classList.remove('loaded'); }
+            if (icon)  { icon.textContent = '❌'; }
+            if (label) { label.textContent = 'Invalid SRT file'; }
+            if (sub)   { sub.textContent = e.message; sub.style.display = 'block'; }
+            self.showError('SRT parse error: ' + e.message);
+        }
+    },
+
+    // ── File I/O helpers ──────────────────────────────────────────────
+
+    // Opens native OS file picker.
+    // In UXP (Premiere): uses require('uxp').storage.localFileSystem
+    // In browser (dev):  falls back to programmatic <input type="file">
+    _openFilePicker: function(types) {
+        var self = this;
+
+        // ── UXP path ──────────────────────────────────────────────────
+        if (typeof require !== 'undefined') {
+            try {
+                var uxpMod  = require('uxp');
+                var storage = uxpMod && uxpMod.storage;
+                var lfs     = storage && storage.localFileSystem;
+                if (lfs && typeof lfs.getFileForOpening === 'function') {
+                    return lfs.getFileForOpening({ allowMultiple: false, types: types })
+                        .then(function(file) {
+                            if (!file) return null; // user cancelled
+                            var fmt = storage.formats && storage.formats.utf8
+                                      ? { format: storage.formats.utf8 }
+                                      : {};
+                            return file.read(fmt).then(function(content) {
+                                return { name: file.name, content: String(content) };
+                            });
+                        });
+                }
+            } catch (e) {
+                Logger.warn('UXP storage unavailable, using browser fallback: ' + e.message);
+            }
+        }
+
+        // ── Browser / dev fallback ────────────────────────────────────
+        return new Promise(function(resolve) {
+            var input = document.createElement('input');
+            input.type   = 'file';
+            input.accept = types.map(function(t) { return '.' + t; }).join(',');
+
+            input.onchange = function() {
+                var file = input.files && input.files[0];
+                if (!file) { resolve(null); return; }
+                self._readFileAsText(file).then(function(text) {
+                    resolve({ name: file.name, content: text });
+                }).catch(function() {
+                    resolve(null);
+                });
+            };
+            // Some browsers need the input in the DOM first
+            input.style.display = 'none';
+            document.body.appendChild(input);
+            input.click();
+            // Clean up after pick
+            setTimeout(function() {
+                try { document.body.removeChild(input); } catch (_) {}
+            }, 60000);
+        });
+    },
+
+    // Read file as text — tries multiple APIs for UXP + browser compatibility
+    _readFileAsText: async function(file) {
+        // 1) Modern File.text() — works in UXP's Chromium for OS drag-and-drop files
+        if (file && typeof file.text === 'function') {
+            try { return await file.text(); } catch (_) {}
+        }
+
+        // 2) UXP Entry.read() — works if this is a UXP storage Entry (from getFileForOpening)
+        if (typeof require !== 'undefined' && file && typeof file.read === 'function') {
+            try {
+                var uxpMod  = require('uxp');
+                var storage = uxpMod && uxpMod.storage;
+                var fmt = storage && storage.formats && storage.formats.utf8
+                          ? { format: storage.formats.utf8 } : {};
+                return String(await file.read(fmt));
+            } catch (_) {}
+        }
+
+        // 3) UXP getEntryForPath — if the file has a nativePath property
+        if (typeof require !== 'undefined' && file && (file.nativePath || file.path)) {
+            try {
+                var uxpMod2  = require('uxp');
+                var storage2 = uxpMod2 && uxpMod2.storage;
+                var lfs2     = storage2 && storage2.localFileSystem;
+                if (lfs2 && typeof lfs2.getEntryForPath === 'function') {
+                    var entry = await lfs2.getEntryForPath(file.nativePath || file.path);
+                    var fmt2  = storage2.formats && storage2.formats.utf8 ? { format: storage2.formats.utf8 } : {};
+                    return String(await entry.read(fmt2));
+                }
+            } catch (_) {}
+        }
+
+        // 4) Classic FileReader — fallback for browser testing
+        return new Promise(function(resolve, reject) {
+            try {
+                var reader = new FileReader();
+                reader.onload  = function(e) { resolve(e.target.result); };
+                reader.onerror = function()  { reject(new Error('FileReader failed')); };
+                reader.readAsText(file, 'UTF-8');
+            } catch (e) {
+                reject(new Error('No file reading API available: ' + e.message));
+            }
+        });
+    },
+
+    // Show sequence summary card using parsed data
+    _updateSummaryCard: function() {
+        var parsed = UIState.getState('fcpxmlParsed');
+        var srt    = UIState.getState('srtParsed');
+        var card   = document.getElementById('sequenceSummary');
+        if (!card) return;
+
+        if (!parsed) { card.classList.remove('visible'); return; }
+
+        // Sequence name
+        var nameEl = document.getElementById('sequenceName');
+        if (nameEl) nameEl.textContent = parsed.sequenceName;
+
+        // Duration
+        var durEl = document.getElementById('statDuration');
+        if (durEl) durEl.textContent = FCPXMLParser.formatDuration(parsed.duration);
+
+        // Total clips
+        var clipsEl = document.getElementById('statClips');
+        if (clipsEl) clipsEl.textContent = parsed.clips.length;
+
+        // Unique tracks used (unique lane count, capped to V1/V2/V3 etc.)
+        var lanes   = {};
+        parsed.clips.forEach(function(c) { lanes[c.lane] = true; });
+        var trackEl = document.getElementById('statTracks');
+        if (trackEl) trackEl.textContent = Object.keys(lanes).length;
+
+        // SRT lines (or FCPXML caption count as fallback)
+        var linesEl = document.getElementById('statLines');
+        if (linesEl) {
+            if (srt && srt.length > 0) {
+                linesEl.textContent = srt.length;
+            } else if (parsed.captions && parsed.captions.length > 0) {
+                linesEl.textContent = parsed.captions.length + '*';
+            } else {
+                linesEl.textContent = '—';
+            }
+        }
+
+        card.classList.add('visible');
+    },
+
+    _checkReadyToAnalyze: function() {
+        var fcpxml = UIState.getState('fcpxmlParsed');
+        // SRT is optional if FCPXML has embedded captions
+        var srt    = UIState.getState('srtParsed');
+        var parsed = UIState.getState('fcpxmlParsed');
+        var hasCaptions = parsed && parsed.captions && parsed.captions.length > 0;
+        var ready  = !!(fcpxml && (srt || hasCaptions));
+
+        var btn  = document.getElementById('analyzeBtn');
+        var hint = document.getElementById('analyzeBtnHint');
+        if (btn) btn.disabled = !ready;
+        if (hint) {
+            if (!fcpxml) {
+                hint.textContent = 'Load FCPXML file above to start';
+                hint.style.display = '';
+            } else if (!ready) {
+                hint.textContent = hasCaptions
+                    ? 'FCPXML has embedded captions — ready to analyze'
+                    : 'Load SRT transcript above to enable';
+                hint.style.display = '';
+                if (hasCaptions) btn && (btn.disabled = false);
+            } else {
+                hint.style.display = 'none';
+            }
+        }
+    },
+
+    startAnalysis: async function() {
+        var self = this;
+        var fcpxmlParsed = UIState.getState('fcpxmlParsed');
+        var srtParsed    = UIState.getState('srtParsed');
+
+        if (!fcpxmlParsed) {
+            self.showError('Load an FCPXML file first.');
+            return;
+        }
+        var hasCaptions = fcpxmlParsed.captions && fcpxmlParsed.captions.length > 0;
+        if (!srtParsed && !hasCaptions) {
+            self.showError('Load an SRT transcript to enable analysis.');
+            return;
+        }
+
+        var provider = self._getProvider();
+        var apiKey   = self._getApiKey();
+        if (provider !== 'ollama' && provider !== 'openai-compatible' && !apiKey) {
+            self.showError('Add an API key in the Settings tab first.');
+            return;
+        }
+
+        // Switch to Analyze tab and reset
+        self.switchTab('analyze');
+        self._cancelRequested = false;
+
+        var aiLog = document.getElementById('aiLog');
+        if (aiLog) aiLog.textContent = '';
+
+        var cancelBtn  = document.getElementById('cancelAnalysisBtn');
+        var emptyState = document.getElementById('analyzeEmptyState');
+        if (cancelBtn)  cancelBtn.style.display  = '';
+        if (emptyState) emptyState.style.display = 'none';
+
+        self.showLoading('Building analysis…');
+        self.updateStatus('analyzing', 'ANALYZING…');
+
+        // ── Step 1: FCPXML already parsed ────────────────────────────
+        self._setPipelineStep('step-parse-xml', 'done', fcpxmlParsed.clips.length + ' clips');
+
+        // ── Step 2: SRT already parsed ───────────────────────────────
+        if (srtParsed) {
+            self._setPipelineStep('step-parse-srt', 'done', srtParsed.length + ' lines');
+        } else {
+            self._setPipelineStep('step-parse-srt', 'done', fcpxmlParsed.captions.length + ' captions');
+        }
+
+        // ── Step 3: Build prompt, kick off AI ───────────────────────
+        self._setPipelineStep('step-match-broll',    'active', '…');
+        self._setPipelineStep('step-detect-silence', 'active', '…');
+        self._setPipelineStep('step-decisions',      'active', '…');
+
+        var summary;
+        try {
+            summary = FCPXMLParser.buildPromptSummary(fcpxmlParsed, srtParsed || fcpxmlParsed.captions);
+        } catch (e) {
+            self.showError('Could not build prompt: ' + e.message);
+            if (cancelBtn) cancelBtn.style.display = 'none';
+            return;
+        }
+
+        self._appendAiLog('> ' + fcpxmlParsed.sequenceName + ' · ' +
+            (srtParsed ? srtParsed.length + ' SRT lines' : fcpxmlParsed.captions.length + ' captions') +
+            ' · sending to ' + provider + '…\n');
+
+        self._initAIService();
+
+        var response;
+        try {
+            response = await AIService.analyzeSequence(summary);
+        } catch (e) {
+            if (self._cancelRequested) return;
+            self._setPipelineStep('step-match-broll',    'error', 'failed');
+            self._setPipelineStep('step-detect-silence', 'error', 'failed');
+            self._setPipelineStep('step-decisions',      'error', 'failed');
+            self.showError('AI request failed: ' + e.message);
+            if (cancelBtn) cancelBtn.style.display = 'none';
+            return;
+        }
+
+        if (self._cancelRequested) return;
+
+        // Show truncated raw output in AI log
+        var rawText = response.text || '';
+        self._appendAiLog(rawText.slice(0, 1000) +
+            (rawText.length > 1000 ? '\n[…' + (rawText.length - 1000) + ' chars truncated]' : ''));
+
+        self._setPipelineStep('step-match-broll',    'done', '✓');
+        self._setPipelineStep('step-detect-silence', 'done', '✓');
+
+        // ── Parse decisions ──────────────────────────────────────────
+        var result = ResponseParser.parseEditDecisions(response);
+        if (!result || !result.decisions.length) {
+            self._setPipelineStep('step-decisions', 'error', 'parse failed');
+            self.showError('Could not parse AI response. Check the AI Output log.');
+            if (cancelBtn) cancelBtn.style.display = 'none';
+            return;
+        }
+
+        self._setPipelineStep('step-decisions', 'done', result.decisions.length + ' decisions');
+
+        // Store with pending status
+        UIState.setState('editDecisions', result.decisions.map(function(d) {
+            return { type: d.type, description: d.description || '', timelineOffset: d.timelineOffset,
+                     duration: d.duration || 0, confidence: d.confidence, reason: d.reason || '',
+                     status: 'pending' };
+        }));
+
+        // ── Populate Review tab ──────────────────────────────────────
+        self._renderDecisions(result);
+        self._updateReviewBadge(result.decisions.length);
+
+        self.hideLoading();
+        if (cancelBtn) cancelBtn.style.display = 'none';
+        self.updateStatus('success', 'DONE · ' + result.decisions.length + ' decisions');
+
+        // Auto-switch to Review tab
+        self.switchTab('review');
+        Logger.info('Analysis complete: ' + result.decisions.length + ' decisions');
+    },
+
+    cancelAnalysis: function() {
+        this._cancelRequested = true;
+        this.hideLoading();
+        var cancelBtn = document.getElementById('cancelAnalysisBtn');
+        if (cancelBtn) cancelBtn.style.display = 'none';
+        this.updateStatus('ready', 'CANCELLED');
+        ['step-parse-xml','step-parse-srt','step-match-broll','step-detect-silence','step-decisions'].forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el && !el.classList.contains('done')) el.className = 'pipeline-step pending';
+            var st = document.getElementById(id + '-status');
+            if (st && st.textContent === '…') st.textContent = '—';
+        });
+        Logger.info('Analysis cancelled');
+    },
+
+    exportModifiedXml: async function() {
+        var self      = this;
+        var decisions = UIState.getState('editDecisions') || [];
+        var approved  = decisions.filter(function(d) { return d.status === 'approved'; });
+
+        if (approved.length === 0) {
+            self.showError('Approve at least one decision before exporting.');
+            return;
+        }
+
+        var rawXml = UIState.getState('fcpxmlRaw');
+        if (!rawXml) {
+            self.showError('Original FCPXML not available — reimport the file and run analysis again.');
+            return;
+        }
+
+        // Inject markers for each approved decision into the FCPXML
+        var modified = self._injectMarkers(rawXml, approved);
+
+        // Save file
+        self.showLoading('Saving…');
+        try {
+            await self._saveFile(modified, 'ambar-export.fcpxml');
+            self.hideLoading();
+            self.updateStatus('success', 'EXPORTED · ' + approved.length + ' decision(s)');
+            setTimeout(function() { self.updateStatus('ready', 'READY'); }, 3000);
+        } catch (e) {
+            self.showError('Export failed: ' + e.message);
+        }
+    },
+
+    // Insert <marker> elements into the FCPXML before </sequence>
+    _injectMarkers: function(xml, decisions) {
+        function escAttr(s) {
+            return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+        function toTime(secs) {
+            // Convert seconds to FCPXML rational time string
+            var ms = Math.max(0, Math.round(secs * 1000));
+            return ms + '/1000s';
+        }
+
+        var lines = decisions.map(function(d) {
+            var label = '[' + d.type.toUpperCase() + '] ' + (d.description || '');
+            var note  = Math.round((d.confidence || 0) * 100) + '% confident — ' + (d.reason || '');
+            return '        <marker start="' + toTime(d.timelineOffset) + '" duration="1/25s"' +
+                   ' value="' + escAttr(label) + '" note="' + escAttr(note) + '"/>';
+        });
+
+        var inject = '\n' + lines.join('\n') + '\n    ';
+
+        // Insert before the closing </sequence> tag
+        var idx = xml.indexOf('</sequence>');
+        if (idx !== -1) {
+            return xml.slice(0, idx) + inject + xml.slice(idx);
+        }
+
+        // Fallback: append before </fcpxml>
+        var fIdx = xml.indexOf('</fcpxml>');
+        if (fIdx !== -1) {
+            return xml.slice(0, fIdx) + '<!-- AMBAR DECISIONS -->\n' + lines.join('\n') + '\n' + xml.slice(fIdx);
+        }
+
+        return xml; // unchanged if no suitable insertion point found
+    },
+
+    // Save a string as a file — UXP storage API with browser download fallback
+    _saveFile: async function(content, filename) {
+        var self = this;
+
+        // UXP path — opens native Save As dialog
+        if (typeof require !== 'undefined') {
+            try {
+                var uxpMod  = require('uxp');
+                var storage = uxpMod && uxpMod.storage;
+                var lfs     = storage && storage.localFileSystem;
+                if (lfs && typeof lfs.getFileForSaving === 'function') {
+                    var file = await lfs.getFileForSaving(filename, { types: ['fcpxml', 'xml'] });
+                    if (!file) return; // user cancelled
+                    var fmt = storage.formats && storage.formats.utf8
+                              ? { format: storage.formats.utf8 } : {};
+                    await file.write(content, fmt);
+                    Logger.info('Exported: ' + file.name);
+                    return;
+                }
+            } catch (e) {
+                Logger.warn('UXP save failed, trying browser download: ' + e.message);
+            }
+        }
+
+        // Browser fallback — trigger <a download> click
+        try {
+            var blob = new Blob([content], { type: 'text/xml' });
+            var url  = URL.createObjectURL(blob);
+            var a    = document.createElement('a');
+            a.href     = url;
+            a.download = filename;
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(function() {
+                try { document.body.removeChild(a); URL.revokeObjectURL(url); } catch (_) {}
+            }, 2000);
+        } catch (e) {
+            throw new Error('Could not save file: ' + e.message);
+        }
+    },
+
+    // ── Pipeline step helper ───────────────────────────────────────────
+
+    _setPipelineStep: function(id, state, statusText) {
+        var el = document.getElementById(id);
+        if (el) el.className = 'pipeline-step ' + state;
+        var st = document.getElementById(id + '-status');
+        if (st) st.textContent = statusText || '';
+    },
+
+    _appendAiLog: function(text) {
+        var log = document.getElementById('aiLog');
+        if (!log) return;
+        log.textContent += text;
+        log.scrollTop = log.scrollHeight;
+    },
+
+    // ── Review tab rendering ───────────────────────────────────────────
+
+    _renderDecisions: function(result) {
+        var self = this;
+
+        var statCuts  = document.getElementById('statCuts');
+        var statBroll = document.getElementById('statBroll');
+        var statStory = document.getElementById('statStory');
+        if (statCuts)  statCuts.textContent  = result.counts.cut;
+        if (statBroll) statBroll.textContent = result.counts.broll;
+        if (statStory) statStory.textContent = result.counts.story;
+
+        var summaryEl = document.getElementById('aiSummary');
+        if (summaryEl) summaryEl.textContent = result.summary || '';
+
+        var list = document.getElementById('decisionsList');
+        if (!list) return;
+        list.innerHTML = '';
+
+        // Approve-all / Reject-all bar
+        var bar = document.createElement('div');
+        bar.style.cssText = 'display:flex;gap:6px;margin-bottom:6px;';
+        bar.innerHTML =
+            '<button class="secondary-btn" style="font-size:11px;padding:5px 10px;" onclick="UIController.approveAll()">✓ Approve All</button>' +
+            '<button class="ghost-btn"     style="font-size:11px;padding:5px 10px;" onclick="UIController.rejectAll()">✕ Reject All</button>';
+        list.appendChild(bar);
+
+        result.decisions.forEach(function(d, idx) {
+            var tagClass = d.type === 'cut' ? 'silence' : (d.type === 'broll' ? 'broll' : 'story');
+            var tagLabel = d.type.toUpperCase();
+            var timeStr  = self._formatTime(d.timelineOffset);
+            var confPct  = Math.round((d.confidence || 0) * 100);
+            var durStr   = d.duration ? ' · ' + d.duration.toFixed(1) + 's' : '';
+
+            var item = document.createElement('div');
+            item.className = 'decision-item';
+            item.id = 'decision-' + idx;
+            item.innerHTML =
+                '<div class="decision-main">' +
+                    '<div class="decision-meta">' +
+                        '<span class="tag ' + tagClass + '">' + tagLabel + '</span>' +
+                        '<span class="decision-time">' + timeStr + durStr + '</span>' +
+                        '<span class="badge">' + confPct + '%</span>' +
+                    '</div>' +
+                    '<div class="decision-desc">' + self._escapeHtml(d.description || '') + '</div>' +
+                '</div>' +
+                '<div class="decision-actions">' +
+                    '<button class="decision-approve" id="approve-' + idx + '" onclick="UIController.approveDecision(' + idx + ')" title="Approve">✓</button>' +
+                    '<button class="decision-reject"  id="reject-'  + idx + '" onclick="UIController.rejectDecision('  + idx + ')" title="Reject">✕</button>' +
+                '</div>';
+            list.appendChild(item);
+        });
+
+        var resultsEl = document.getElementById('reviewResults');
+        var emptyEl   = document.getElementById('reviewEmptyState');
+        if (resultsEl) resultsEl.style.display = '';
+        if (emptyEl)   emptyEl.style.display   = 'none';
+    },
+
+    approveDecision: function(idx) {
+        var decisions = UIState.getState('editDecisions');
+        if (!decisions || !decisions[idx]) return;
+        var d = decisions[idx];
+        d.status = (d.status === 'approved') ? 'pending' : 'approved';
+
+        var item       = document.getElementById('decision-' + idx);
+        var approveBtn = document.getElementById('approve-' + idx);
+        var rejectBtn  = document.getElementById('reject-' + idx);
+
+        if (item) {
+            item.classList.remove('approved', 'rejected');
+            if (d.status === 'approved') item.classList.add('approved');
+        }
+        if (approveBtn) {
+            if (d.status === 'approved') approveBtn.classList.add('on');
+            else                         approveBtn.classList.remove('on');
+        }
+        if (rejectBtn) rejectBtn.classList.remove('on');
+
+        UIState.setState('editDecisions', decisions);
+    },
+
+    rejectDecision: function(idx) {
+        var decisions = UIState.getState('editDecisions');
+        if (!decisions || !decisions[idx]) return;
+        var d = decisions[idx];
+        d.status = (d.status === 'rejected') ? 'pending' : 'rejected';
+
+        var item       = document.getElementById('decision-' + idx);
+        var approveBtn = document.getElementById('approve-' + idx);
+        var rejectBtn  = document.getElementById('reject-' + idx);
+
+        if (item) {
+            item.classList.remove('approved', 'rejected');
+            if (d.status === 'rejected') item.classList.add('rejected');
+        }
+        if (rejectBtn) {
+            if (d.status === 'rejected') rejectBtn.classList.add('on');
+            else                         rejectBtn.classList.remove('on');
+        }
+        if (approveBtn) approveBtn.classList.remove('on');
+
+        UIState.setState('editDecisions', decisions);
+    },
+
+    approveAll: function() {
+        var decisions = UIState.getState('editDecisions');
+        if (!decisions) return;
+        var self = this;
+        decisions.forEach(function(_, idx) { self.approveDecision(idx); });
+    },
+
+    rejectAll: function() {
+        var decisions = UIState.getState('editDecisions');
+        if (!decisions) return;
+        var self = this;
+        decisions.forEach(function(_, idx) { self.rejectDecision(idx); });
+    },
+
+    _updateReviewBadge: function(count) {
+        var badge = document.getElementById('reviewBadge');
+        var btn   = document.querySelector('[data-tab="review"]');
+        if (badge) { badge.textContent = count; badge.style.display = count > 0 ? '' : 'none'; }
+        if (btn) {
+            if (count > 0) btn.classList.add('has-data');
+            else           btn.classList.remove('has-data');
+        }
+    },
+
+    _formatTime: function(secs) {
+        if (!secs || isNaN(secs)) return '0:00';
+        var m = Math.floor(secs / 60);
+        var s = Math.floor(secs % 60);
+        return m + ':' + (s < 10 ? '0' : '') + s;
+    },
+
+    _escapeHtml: function(str) {
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
     },
 
     toggleApiKeyVisibility() {
@@ -226,9 +1027,11 @@ const UIController = {
             return;
         }
 
-        const apiKey = this._getApiKey();
-        if (!Validators.isValidApiKey(apiKey)) {
-            this.showError('No API key — add your Gemini key in the Config tab.');
+        const provider = this._getProvider();
+        const apiKey   = this._getApiKey();
+        var localProviders = { 'ollama': true, 'openai-compatible': true };
+        if (!localProviders[provider] && !Validators.isValidApiKey(apiKey)) {
+            this.showError('No API key — add it in the Config tab.');
             return;
         }
 
@@ -244,10 +1047,10 @@ const UIController = {
                 return;
             }
 
-            this.showLoading('Analyzing with Gemini AI…');
-            GeminiService.initialize(apiKey);
+            this.showLoading('Analyzing…');
+            this._initAIService();
 
-            const raw    = await GeminiService.analyzeSilence(ProjectReader.formatForAPI(metadata), parseFloat(threshold), parseInt(duration, 10));
+            const raw    = await AIService.analyzeSilence(ProjectReader.formatForAPI(metadata), parseFloat(threshold), parseInt(duration, 10));
             const parsed = ResponseParser.parseSilenceResponse(raw);
 
             if (!parsed || !parsed.segments.length) {
@@ -286,9 +1089,11 @@ const UIController = {
             return;
         }
 
-        const apiKey = this._getApiKey();
-        if (!Validators.isValidApiKey(apiKey)) {
-            this.showError('No API key — add your Gemini key in the Config tab.');
+        const provider2  = this._getProvider();
+        const apiKey2    = this._getApiKey();
+        var localProviders2 = { 'ollama': true, 'openai-compatible': true };
+        if (!localProviders2[provider2] && !Validators.isValidApiKey(apiKey2)) {
+            this.showError('No API key — add it in the Config tab.');
             return;
         }
 
@@ -303,10 +1108,10 @@ const UIController = {
                 return;
             }
 
-            this.showLoading('Analyzing with Gemini AI…');
-            GeminiService.initialize(apiKey);
+            this.showLoading('Analyzing…');
+            this._initAIService();
 
-            const raw    = await GeminiService.detectBroll(ProjectReader.formatForAPI(metadata), parseFloat(confidence));
+            const raw    = await AIService.detectBroll(ProjectReader.formatForAPI(metadata), parseFloat(confidence));
             const parsed = ResponseParser.parseBrollResponse(raw);
 
             if (!parsed || !parsed.opportunities.length) {
@@ -324,7 +1129,7 @@ const UIController = {
         }
     },
 
-    applyEdits() {
+    async applyEdits() {
         const results = UIState.getState('results');
         if (!results) { this.showError('No results to apply.'); return; }
 
@@ -333,19 +1138,19 @@ const UIController = {
         try {
             let editResult;
             if (results.type === 'silence') {
-                editResult = TimelineEditor.markSilenceSegments(results.segments);
+                editResult = await TimelineEditor.markSilenceSegments(results.segments);
             } else if (results.type === 'broll') {
-                editResult = TimelineEditor.markBrollOpportunities(results.opportunities);
+                editResult = await TimelineEditor.markBrollOpportunities(results.opportunities);
             }
 
             this.hideLoading();
 
-            if (editResult && editResult.success) {
-                this.updateStatus('success', `${editResult.marked} MARKERS ADDED`);
+            if (editResult && editResult.marked > 0) {
+                this.updateStatus('success', editResult.marked + ' MARKERS ADDED');
                 UIState.reset();
                 this.hideResults();
             } else {
-                this.showError('Some markers could not be applied. Check the sequence is not locked.');
+                this.showError('Could not write markers — sequence.markers is unavailable in this PPro version. Try adding markers manually using the analysis timestamps shown.');
             }
         } catch (error) {
             Logger.error('Apply edits failed', error);
@@ -601,9 +1406,13 @@ const UIController = {
             wrn('No sequence captured via events yet — open/click a sequence in PPro timeline');
         }
 
-        // ── 10. API key ──────────────────────────────────────────────
+        // ── 10. AI provider + key ────────────────────────────────────
+        const provider = this._getProvider();
+        const model    = AIService.model || (typeof PROVIDERS !== 'undefined' && PROVIDERS[provider] ? PROVIDERS[provider].defaultModel : '');
+        ok('AI provider: ' + provider + ' / model: ' + (model || '(default)'));
         const key = this._getApiKey();
-        if (!key) wrn('No API key — add it in the Config tab');
+        if (provider === 'ollama') ok('Ollama: no API key needed');
+        else if (!key) wrn('No API key — add it in the Config tab');
         else ok('API key: ' + key.slice(0, 8) + '… (' + key.length + ' chars)');
 
         out.innerHTML = lines.join('\n');
@@ -715,13 +1524,17 @@ const UIController = {
 
     saveSettings() {
         try {
-            const apiKey = this._getApiKey();
-            UIState.updateSetting('apiKey', apiKey);
+            const provider = this._getProvider();
+            UIState.updateSetting('apiKey',     this._getApiKey());
+            UIState.updateSetting('aiProvider', provider);
+            UIState.updateSetting('aiModel',    this._getModel());
+            UIState.updateSetting('baseUrl',    this._getBaseUrl());
             localStorage.setItem('pluginSettings', JSON.stringify(UIState.getSettings()));
-            if (apiKey) GeminiService.initialize(apiKey);
+            CONSTANTS.AI_PROVIDER = provider;
+            this._initAIService();
             this.updateStatus('success', 'SETTINGS SAVED');
             setTimeout(() => this.updateStatus('ready', 'READY'), 2000);
-            Logger.debug('Settings saved');
+            Logger.debug('Settings saved: provider=' + provider);
         } catch (e) {
             Logger.error('Failed to save settings', e);
         }
@@ -752,11 +1565,33 @@ const UIController = {
                 }
             }
 
-            if (settings.apiKey && Validators.isValidApiKey(settings.apiKey)) {
-                GeminiService.initialize(settings.apiKey);
+            // Restore provider selector and model
+            if (settings.aiProvider) {
+                const provEl = document.getElementById('aiProvider');
+                if (provEl) provEl.value = settings.aiProvider;
+                CONSTANTS.AI_PROVIDER = settings.aiProvider;
+                this._updateProviderUI(settings.aiProvider);
+            }
+            if (settings.aiModel) {
+                const modEl = document.getElementById('aiModel');
+                if (modEl) modEl.value = settings.aiModel;
             }
 
-            Logger.debug('Settings restored');
+            // Restore base URL field
+            if (settings.baseUrl) {
+                const urlEl = document.getElementById('baseUrlInput');
+                if (urlEl) urlEl.value = settings.baseUrl;
+            }
+
+            // Initialize AI service from restored settings
+            AIService.initialize({
+                provider: settings.aiProvider || 'ollama',
+                apiKey:   settings.apiKey     || '',
+                model:    settings.aiModel    || '',
+                baseUrl:  settings.baseUrl    || '',
+            });
+
+            Logger.debug('Settings restored: provider=' + (settings.aiProvider || 'ollama'));
         } catch (e) {
             Logger.error('Failed to restore settings', e);
         }

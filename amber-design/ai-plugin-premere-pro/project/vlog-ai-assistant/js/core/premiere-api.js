@@ -588,27 +588,18 @@ const PremiereAPI = {
 
     /**
      * Add a comment marker to the sequence timeline ruler.
-     * UXP proxy properties are async — we must await sequence.markers.
+     * @param {object} sequence
+     * @param {number} timeInSeconds
+     * @param {string} name
+     * @param {string} comment
      */
-    async addSequenceMarker(sequence, timeInSeconds, name, comment) {
+    addSequenceMarker(sequence, timeInSeconds, name, comment) {
         try {
-            if (!sequence) return false;
-
-            // Try getting the markers collection — both sync and async
-            var markers = null;
-            try { markers = await sequence.markers; } catch (_) {}
-            if (!markers && typeof sequence.getMarkers === 'function') {
-                try { markers = await sequence.getMarkers(); } catch (_) {}
-            }
-            if (!markers) {
-                Logger.warn('sequence.markers unavailable — marker at ' + timeInSeconds.toFixed(2) + 's skipped');
-                return false;
-            }
-
-            var marker = await markers.createMarker(timeInSeconds);
+            if (!sequence || !sequence.markers) return false;
+            const marker = sequence.markers.createMarker(timeInSeconds);
             if (!marker) return false;
-            try { marker.name     = name    || ''; } catch (_) {}
-            try { marker.comments = comment || ''; } catch (_) {}
+            marker.name     = name    || '';
+            marker.comments = comment || '';
             Logger.debug('Marker added at ' + timeInSeconds.toFixed(2) + 's: ' + name);
             return true;
         } catch (e) {

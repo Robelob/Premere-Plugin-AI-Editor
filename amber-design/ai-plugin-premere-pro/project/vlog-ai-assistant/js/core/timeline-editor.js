@@ -8,7 +8,7 @@ const TimelineEditor = {
      * Markers appear on the timeline ruler so the editor can review and cut manually.
      * Also color-labels clips that overlap each silence range (red = silence).
      */
-    async markSilenceSegments(segments) {
+    markSilenceSegments(segments) {
         Logger.info('Marking silence segments...');
 
         if (!Array.isArray(segments) || segments.length === 0) {
@@ -25,19 +25,20 @@ const TimelineEditor = {
         let marked = 0;
         const clips = PremiereAPI.getSequenceClips(sequence);
 
-        for (var i = 0; i < segments.length; i++) {
-            const segment  = segments[i];
+        segments.forEach((segment) => {
             const startSec = segment.start / 1000;
-            const endSec   = segment.end   / 1000;
-            const comment  = 'Silence ' + startSec.toFixed(1) + 's – ' + endSec.toFixed(1) + 's (remove this gap)';
+            const endSec   = segment.end / 1000;
+            const comment  = `Silence ${startSec.toFixed(1)}s – ${endSec.toFixed(1)}s (remove this gap)`;
 
-            const didAdd = await PremiereAPI.addSequenceMarker(sequence, startSec, 'Silence', comment);
+            // Add a sequence timeline marker at the silence start
+            const didAdd = PremiereAPI.addSequenceMarker(sequence, startSec, 'Silence', comment);
             if (didAdd) marked++;
 
+            // Also color any overlapping clips red so they stand out in the timeline
             clips.forEach((clip) => {
                 const props = PremiereAPI.getClipProperties(clip);
                 if (!props) return;
-                const clipStart = props.inPoint  / 1000;
+                const clipStart = props.inPoint / 1000;
                 const clipEnd   = props.outPoint / 1000;
                 if (clipStart <= endSec && clipEnd >= startSec) {
                     PremiereAPI.addMarker(clip, 'silence', comment);
@@ -45,10 +46,10 @@ const TimelineEditor = {
             });
 
             this.editHistory.push({ type: 'mark-silence', segment, timestamp: Date.now() });
-        }
+        });
 
-        Logger.info('Silence marking complete — ' + marked + ' markers added');
-        return { success: marked > 0, marked };
+        Logger.info(`Silence marking complete — ${marked} markers added`);
+        return { success: true, marked };
     },
 
     /**
@@ -56,7 +57,7 @@ const TimelineEditor = {
      * Marks show the suggestion text so the editor knows what footage to find.
      * Also color-labels the nearest clip yellow.
      */
-    async markBrollOpportunities(opportunities) {
+    markBrollOpportunities(opportunities) {
         Logger.info('Marking B-roll opportunities...');
 
         if (!Array.isArray(opportunities) || opportunities.length === 0) {
@@ -73,24 +74,25 @@ const TimelineEditor = {
         let marked = 0;
         const clips = PremiereAPI.getSequenceClips(sequence);
 
-        for (var i = 0; i < opportunities.length; i++) {
-            const opp        = opportunities[i];
-            const timeSec    = opp.timestamp / 1000;
+        opportunities.forEach((opp) => {
+            const timeSec   = opp.timestamp / 1000;
             const suggestion = opp.suggestion || opp.type || 'B-roll opportunity';
-            const comment    = 'B-roll @ ' + timeSec.toFixed(1) + 's: ' + suggestion;
+            const comment   = `B-roll @ ${timeSec.toFixed(1)}s: ${suggestion}`;
 
-            const didAdd = await PremiereAPI.addSequenceMarker(sequence, timeSec, 'B-Roll', comment);
+            const didAdd = PremiereAPI.addSequenceMarker(sequence, timeSec, 'B-Roll', comment);
             if (didAdd) marked++;
 
+            // Color the clip that contains this timestamp yellow
             let nearestClip = null;
             let minDist = Infinity;
             clips.forEach((clip) => {
                 const props = PremiereAPI.getClipProperties(clip);
                 if (!props) return;
-                const clipStart = props.inPoint  / 1000;
+                const clipStart = props.inPoint / 1000;
                 const clipEnd   = props.outPoint / 1000;
                 if (timeSec >= clipStart && timeSec <= clipEnd) {
-                    nearestClip = clip; minDist = 0;
+                    nearestClip = clip;
+                    minDist = 0;
                 } else if (minDist > 0) {
                     const dist = Math.min(Math.abs(timeSec - clipStart), Math.abs(timeSec - clipEnd));
                     if (dist < minDist) { minDist = dist; nearestClip = clip; }
@@ -99,10 +101,10 @@ const TimelineEditor = {
             if (nearestClip) PremiereAPI.addMarker(nearestClip, 'broll', comment);
 
             this.editHistory.push({ type: 'mark-broll', opportunity: opp, timestamp: Date.now() });
-        }
+        });
 
-        Logger.info('B-roll marking complete — ' + marked + ' markers added');
-        return { success: marked > 0, marked };
+        Logger.info(`B-roll marking complete — ${marked} markers added`);
+        return { success: true, marked };
     },
 
     /**
