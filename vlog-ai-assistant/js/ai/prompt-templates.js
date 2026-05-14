@@ -110,6 +110,16 @@ const PromptTemplates = {
             '• "cut"   — remove silence, filler words, dead air, or repetition in the A-roll\n' +
             '• "broll" — place B-roll over a section (only suggest clips listed under AVAILABLE B-ROLL)\n' +
             '• "story" — reorder, restructure, or tighten for better narrative flow\n\n' +
+            '⚠ CRITICAL — HOW TO SET timelineOffset:\n' +
+            'Transcript entries look like  [M:SS] text  where M = minutes, SS = seconds.\n' +
+            'timelineOffset is TOTAL SECONDS from the sequence start — NOT the M:SS value itself.\n' +
+            'You MUST convert:\n' +
+            '  [0:45] → timelineOffset = 45.0     (0 min × 60 + 45 sec)\n' +
+            '  [1:10] → timelineOffset = 70.0     (1 min × 60 + 10 sec)\n' +
+            '  [1:36] → timelineOffset = 96.0     (1 min × 60 + 36 sec)\n' +
+            '  [2:05] → timelineOffset = 125.0    (2 min × 60 + 5 sec)\n' +
+            'WRONG: timelineOffset: 1.36   ← this means 1.36 seconds, not 1 min 36 sec\n' +
+            'RIGHT: timelineOffset: 96.0   ← correct for [1:36] transcript entry\n\n' +
             'Respond ONLY with valid JSON — no text before or after the JSON block:\n' +
             '{\n' +
             '  "summary": "2-3 sentence story assessment and pacing note",\n' +
@@ -117,7 +127,7 @@ const PromptTemplates = {
             '    {\n' +
             '      "type": "cut",\n' +
             '      "description": "Short specific action label",\n' +
-            '      "timelineOffset": 45.2,\n' +
+            '      "timelineOffset": 96.0,\n' +
             '      "duration": 3.1,\n' +
             '      "confidence": 0.92,\n' +
             '      "reason": "Why this edit improves the video"\n' +
@@ -125,9 +135,11 @@ const PromptTemplates = {
             '  ]\n' +
             '}\n\n' +
             'Rules:\n' +
-            '- timelineOffset and duration are in seconds (float)\n' +
+            '- timelineOffset is TOTAL SECONDS (float) — always convert [M:SS] as shown above\n' +
+            '- timelineOffset must be within the VALID RANGE shown in the sequence header\n' +
+            '- duration must be > 0.1 seconds\n' +
             '- confidence is 0.0–1.0\n' +
-            '- Order decisions by impact (highest first)\n' +
+            '- Order decisions by timelineOffset (earliest first)\n' +
             '- For broll decisions, name the specific asset from AVAILABLE B-ROLL in the description\n' +
             '- type must be exactly "cut", "broll", or "story"';
     },

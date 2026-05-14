@@ -52,6 +52,11 @@ var FCPXMLParser = {
             throw new Error('XML parse error: ' + errEl.textContent.slice(0, 200));
         }
 
+        // Detect XMEML (Premiere Pro's FCP7 legacy export) vs FCPXML
+        if (xmlString.indexOf('<xmeml') !== -1) {
+            return this._parseXmeml(doc, xmlString);
+        }
+
         var result = {
             sequenceName: 'Untitled Sequence',
             duration: 0,
@@ -94,12 +99,142 @@ var FCPXMLParser = {
         var spine = sequence.querySelector('spine');
         if (spine) {
             this._walkSpine(spine, result);
+        } else {
+            this._walkSpine(sequence, result);
         }
 
         // Clean up internal map
         delete result._formats;
 
         return result;
+    },
+
+    // ── XMEML (Premiere Pro FCP7 legacy format) ────────────────────────
+
+    _parseXmeml: function(doc, rawXml) {
+        var self = this;
+        var result = {
+            sequenceName: 'Untitled Sequence',
+            duration: 0,
+            frameRate: 25,
+            width: 1920,
+            height: 1080,
+            clips: [],
+            captions: [],
+            assets: {},
+            _format: 'xmeml',
+            // Map of fileId → full <file>…</file> XML string.
+            // Full definitions contain <pathurl>; Premiere needs these to re-link media.
+            _fileDefMap: {}
+        };
+
+        // Extract full <file> definitions from the raw XML string.
+        // Full definitions always start with a <name> child element;
+        // reference-only elements are self-closing (<file id="x"/>).
+        if (rawXml) {
+            var filePat = /<file\s+id="([^"]+)"\s*>\s*<name>[\s\S]*?<\/file>/g;
+            var fm;
+            while ((fm = filePat.exec(rawXml)) !== null) {
+                if (!result._fileDefMap[fm[1]]) {
+                    result._fileDefMap[fm[1]] = fm[0];
+                }
+            }
+        }
+
+        var sequence = doc.querySelector('sequence');
+        if (!sequence) {
+            throw new Error('No <sequence> found in XMEML. Export your sequence from Premiere using File → Export → Final Cut Pro XML.');
+        }
+
+        // Name
+        var nameEl = sequence.querySelector('name');
+        if (nameEl) result.sequenceName = nameEl.textContent.trim();
+
+        // Frame rate
+        var rateEl = sequence.querySelector('rate');
+        var tbEl = rateEl ? rateEl.querySelector('timebase') : null;
+        var fps = tbEl ? (parseInt(tbEl.textContent.trim(), 10) || 25) : 25;
+        result.frameRate = fps;
+
+        // Dimensions from samplecharacteristics
+        var scEl = sequence.querySelector('samplecharacteristics');
+        if (scEl) {
+            var wEl = scEl.querySelector('width');
+            var hEl = scEl.querySelector('height');
+            if (wEl) result.width  = parseInt(wEl.textContent.trim(), 10) || 1920;
+            if (hEl) result.height = parseInt(hEl.textContent.trim(), 10) || 1080;
+        }
+
+        // Sequence duration (frames → seconds)
+        // <duration> appears as direct child of <sequence>, before <media>
+        var durEl = sequence.querySelector('duration');
+        if (durEl) result.duration = (parseInt(durEl.textContent.trim(), 10) || 0) / fps;
+
+        // Walk video tracks: <media><video><track><clipitem>
+        var media = sequence.querySelector('media');
+        if (!media) return result;
+        var video = media.querySelector('video');
+        if (!video) return result;
+
+        var videoChildren = video.children;
+        var trackIdx = 0;
+        for (var ti = 0; ti < videoChildren.length; ti++) {
+            var trackEl = videoChildren[ti];
+            if (trackEl.tagName.toLowerCase() !== 'track') continue;
+            var clipChildren = trackEl.children;
+            for (var ci = 0; ci < clipChildren.length; ci++) {
+                var item = clipChildren[ci];
+                if (item.tagName.toLowerCase() === 'clipitem') {
+                    self._extractXmemlClip(item, trackIdx, fps, result);
+                }
+            }
+            trackIdx++;
+        }
+
+        return result;
+    },
+
+    _extractXmemlClip: function(item, lane, fps, result) {
+        var nameEl  = item.querySelector('name');
+        var startEl = item.querySelector('start');
+        var endEl   = item.querySelector('end');
+        var inEl    = item.querySelector('in');
+        var outEl   = item.querySelector('out');
+        var fileEl  = item.querySelector('file');
+
+        var name   = nameEl  ? nameEl.textContent.trim()                    : 'clip';
+        var startF = startEl ? parseInt(startEl.textContent.trim(), 10) : 0;
+        var endF   = endEl   ? parseInt(endEl.textContent.trim(),   10) : 0;
+        var inF    = inEl    ? parseInt(inEl.textContent.trim(),    10) : 0;
+        var outF   = outEl   ? parseInt(outEl.textContent.trim(),   10) : (endF - startF);
+
+        if (inF  < 0) inF  = 0;                     // -1 = no in-point set
+        if (outF < 0) outF = endF - startF;
+        if (startF < 0 || endF <= startF) return;   // disabled clip
+
+        var fileId = fileEl ? (fileEl.getAttribute('id') || '') : '';
+        var itemId = item.getAttribute('id') || ('ci-' + result.clips.length);
+        var isBroll = lane > 0 || this._looksLikeBroll(name);
+
+        result.clips.push({
+            ref:      fileId,
+            name:     name,
+            offset:   startF / fps,
+            duration: (endF - startF) / fps,
+            start:    inF / fps,
+            lane:     lane,
+            track:    lane === 0 ? 'V1' : 'V' + (lane + 1),
+            type:     isBroll ? 'broll' : 'aroll',
+            path:     '',
+            // Preserved for XMEML editing
+            _startFrame: startF,
+            _endFrame:   endF,
+            _inFrame:    inF,
+            _outFrame:   outF,
+            _fps:        fps,
+            _itemId:     itemId,
+            _fileRef:    fileId
+        });
     },
 
     // ── Resource extraction ────────────────────────────────────────────
@@ -249,8 +384,9 @@ var FCPXMLParser = {
     buildPromptSummary: function(parsed, srtLines) {
         var lines = [];
         lines.push('SEQUENCE: ' + parsed.sequenceName);
-        lines.push('DURATION: ' + this.formatDuration(parsed.duration));
+        lines.push('DURATION: ' + this.formatDuration(parsed.duration) + ' (' + parsed.duration.toFixed(1) + 's total)');
         lines.push('RESOLUTION: ' + parsed.width + 'x' + parsed.height + ' @ ' + parsed.frameRate + 'fps');
+        lines.push('VALID timelineOffset RANGE: 0.0 to ' + parsed.duration.toFixed(1) + ' seconds');
         lines.push('');
 
         // Group clips by track

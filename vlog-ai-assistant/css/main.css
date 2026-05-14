@@ -487,6 +487,7 @@ input, select, textarea { font: inherit; color: inherit; outline: none; }
 .decision-meta { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; flex-wrap: wrap; }
 .decision-time { font-family: var(--font-mono); font-size: 10.5px; color: var(--amber); }
 .decision-desc { font-size: 11.5px; color: var(--text-2); line-height: 1.4; }
+.decision-reason { font-size: 10.5px; color: var(--text-4); line-height: 1.4; margin-top: 3px; font-style: italic; }
 .decision-actions { display: flex; gap: 4px; flex: none; }
 .decision-approve,
 .decision-reject {

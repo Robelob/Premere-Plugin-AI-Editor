@@ -62,7 +62,8 @@ Your project follows consistent naming:
 | \*-controller.js\ | Event handlers, UI logic | \ui-controller.js\ |
 | \*-service.js\ | API/external services | \gemini-service.js\ |
 | \*-state.js\ | State management | \ui-state.js\ |
-| \*-parser.js\ | Response/data parsing | \esponse-parser.js\ |
+| \*-parser.js\ | Response/data parsing | \
+esponse-parser.js\ |
 | \*-api.js\ | API wrappers | \premiere-api.js\ |
 | \*-reader.js\ | Data extraction | \project-reader.js\ |
 | \*-editor.js\ | Data modification | \	imeline-editor.js\ |
@@ -178,7 +179,8 @@ Since UXP doesn't support ES6 modules well, scripts load sequentially:
 ### AI Layer (\js/ai/\)
 - **Service** (\gemini-service.js\): API requests, retry logic, caching
 - **Prompts** (\prompt-templates.js\): Engineered prompts for silence, B-roll, captions
-- **Parser** (\esponse-parser.js\): Parse + validate JSON responses
+- **Parser** (\
+esponse-parser.js\): Parse + validate JSON responses
 
 ### Utils (\js/utils/\)
 - **Logger** (\logger.js\): Debug-aware logging

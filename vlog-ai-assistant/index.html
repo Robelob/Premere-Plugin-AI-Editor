@@ -211,10 +211,11 @@
                 </div>
 
                 <!-- Export CTA -->
-                <button class="cta-btn" id="exportBtn" onclick="UIController.exportModifiedXml()">
+                <button class="cta-btn" id="exportBtn" onclick="UIController.exportModifiedXml()" disabled>
                     <span class="btn-icon">↓</span> Export Modified XML
                 </button>
-                <div class="field-hint" style="text-align:center">Only approved decisions will be applied</div>
+                <div class="field-hint" id="exportHint" style="text-align:center">Approve decisions above to enable export</div>
+                <div class="field-hint" style="text-align:center;margin-top:4px;color:var(--text-4)">Cuts &amp; B-roll → real FCPXML edits · Story → timeline markers</div>
 
             </div><!-- /reviewResults -->
 
@@ -358,6 +359,7 @@
 <script src="js/core/timeline-editor.js"></script>
 <script src="js/utils/xml-shim.js"></script>
 <script src="js/core/xml-parser.js"></script>
+<script src="js/core/fcpxml-editor.js"></script>
 <script src="js/core/srt-parser.js"></script>
 <script src="js/ai/prompt-templates.js"></script>
 <script src="js/ai/response-parser.js"></script>

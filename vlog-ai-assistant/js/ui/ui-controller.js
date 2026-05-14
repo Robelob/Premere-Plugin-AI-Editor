@@ -682,6 +682,39 @@ const UIController = {
             return;
         }
 
+        // Drop decisions outside the sequence duration (e.g. AI outputs 1.36 for [1:36] instead of 96.0)
+        var seqDuration = fcpxmlParsed.duration;
+        var inRange = result.decisions.filter(function(d) {
+            return d.timelineOffset >= 0 && d.timelineOffset < seqDuration;
+        });
+        var dropped = result.decisions.length - inRange.length;
+        if (dropped > 0) {
+            self._appendAiLog('\n[Dropped ' + dropped + ' decision(s) with timelineOffset outside 0–' +
+                seqDuration.toFixed(1) + 's — AI likely misread [M:SS] timestamps]');
+            result.decisions = inRange;
+            result.counts = { cut: 0, broll: 0, story: 0 };
+            result.decisions.forEach(function(d) {
+                if (result.counts[d.type] !== undefined) result.counts[d.type]++;
+            });
+        }
+
+        // Warn if all remaining decisions cluster in the first 5% of the timeline
+        if (result.decisions.length > 0 && seqDuration > 10) {
+            var boundary = seqDuration * 0.05;
+            var allClustered = result.decisions.every(function(d) { return d.timelineOffset < boundary; });
+            if (allClustered) {
+                self._appendAiLog('\n⚠ All decisions are within the first ' + boundary.toFixed(1) +
+                    's of a ' + seqDuration.toFixed(1) + 's sequence — AI may have misread [M:SS] as decimal seconds.');
+            }
+        }
+
+        if (!result.decisions.length) {
+            self._setPipelineStep('step-decisions', 'error', 'all out of range');
+            self.showError('All AI decisions were out of range. The AI may have misread timestamps — try again.');
+            if (cancelBtn) cancelBtn.style.display = 'none';
+            return;
+        }
+
         self._setPipelineStep('step-decisions', 'done', result.decisions.length + ' decisions');
 
         // Store with pending status
@@ -720,74 +753,120 @@ const UIController = {
     },
 
     exportModifiedXml: async function() {
-        var self      = this;
-        var decisions = UIState.getState('editDecisions') || [];
-        var approved  = decisions.filter(function(d) { return d.status === 'approved'; });
+        var self       = this;
+        var decisions  = UIState.getState('editDecisions') || [];
+        var approved   = decisions.filter(function(d) { return d.status === 'approved'; });
 
         if (approved.length === 0) {
             self.showError('Approve at least one decision before exporting.');
             return;
         }
 
-        var rawXml = UIState.getState('fcpxmlRaw');
-        if (!rawXml) {
-            self.showError('Original FCPXML not available — reimport the file and run analysis again.');
+        var rawXml     = UIState.getState('fcpxmlRaw');
+        var parsedData = UIState.getState('fcpxmlParsed');
+        if (!rawXml || !parsedData) {
+            self.showError('Original XML not available — reimport the file and run analysis again.');
             return;
         }
 
-        // Inject markers for each approved decision into the FCPXML
-        var modified = self._injectMarkers(rawXml, approved);
+        // Premiere exports XMEML (.xml); FCP X uses FCPXML (.fcpxml).
+        // The output extension must match the input so Premiere can re-import it.
+        var isXmeml        = rawXml.indexOf('<xmeml') !== -1;
+        var ext            = isXmeml ? 'xml' : 'fcpxml';
+        var exportFilename = 'ambar-export.' + ext;
+        Logger.info('Export: format=' + (isXmeml ? 'XMEML' : 'FCPXML') + ' file=' + exportFilename);
 
-        // Save file
-        self.showLoading('Saving…');
+        self.showLoading('Applying edits…');
         try {
-            await self._saveFile(modified, 'ambar-export.fcpxml');
+            var modified = FCPXMLEditor.applyDecisions(rawXml, parsedData, approved);
+
+            var cuts  = approved.filter(function(d) { return d.type === 'cut';   }).length;
+            var broll = approved.filter(function(d) { return d.type === 'broll'; }).length;
+            var story = approved.filter(function(d) { return d.type === 'story'; }).length;
+            var parts = [];
+            if (cuts)  parts.push(cuts  + ' cut'  + (cuts  !== 1 ? 's' : ''));
+            if (broll) parts.push(broll + ' B-roll');
+            if (story) parts.push(story + ' story marker' + (story !== 1 ? 's' : ''));
+
+            // Attempt 1: auto-save to UXP temp folder (no dialog) → auto-import
+            if (PremiereAPI.isAvailable()) {
+                var tempResult = await self._saveTempFile(modified, exportFilename);
+                if (tempResult && tempResult.nativePath) {
+                    self.showLoading('Importing into Premiere…');
+                    var autoImported = await PremiereAPI.importFile(tempResult.nativePath);
+                    self.hideLoading();
+                    if (autoImported) {
+                        self.updateStatus('success', 'DONE · ' + parts.join(' · '));
+                        setTimeout(function() { self.updateStatus('ready', 'READY'); }, 6000);
+                        return;
+                    }
+                }
+            }
+
+            // Attempt 2: Save dialog → auto-import from the chosen path
+            var saveResult = await self._saveFile(modified, exportFilename, ext);
             self.hideLoading();
-            self.updateStatus('success', 'EXPORTED · ' + approved.length + ' decision(s)');
-            setTimeout(function() { self.updateStatus('ready', 'READY'); }, 3000);
+            if (!saveResult) return; // user cancelled
+
+            self.updateStatus('success', 'EXPORTED · ' + parts.join(' · '));
+
+            if (saveResult.nativePath && PremiereAPI.isAvailable()) {
+                self.showLoading('Importing into Premiere…');
+                var imported = await PremiereAPI.importFile(saveResult.nativePath);
+                self.hideLoading();
+                if (imported) {
+                    self.updateStatus('success', 'IMPORTED · ' + parts.join(' · '));
+                } else {
+                    self.updateStatus('success', 'SAVED · ' + parts.join(' · '));
+                    self.showError('File saved. To apply: File → Import → select the .' + ext + ' file.');
+                }
+            }
+
+            setTimeout(function() { self.updateStatus('ready', 'READY'); }, 6000);
         } catch (e) {
+            self.hideLoading();
             self.showError('Export failed: ' + e.message);
         }
     },
 
-    // Insert <marker> elements into the FCPXML before </sequence>
-    _injectMarkers: function(xml, decisions) {
-        function escAttr(s) {
-            return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    // Auto-save to UXP temp/data folder without showing a Save dialog.
+    // Returns { name, nativePath } on success, null if unavailable.
+    _saveTempFile: async function(content, filename) {
+        if (typeof require === 'undefined') return null;
+        try {
+            var uxpMod  = require('uxp');
+            var storage = uxpMod && uxpMod.storage;
+            var lfs     = storage && storage.localFileSystem;
+            if (!lfs) return null;
+
+            var folder = null;
+            if (typeof lfs.getTemporaryFolder === 'function') {
+                try { folder = await lfs.getTemporaryFolder(); } catch (_) {}
+            }
+            if (!folder && typeof lfs.getDataFolder === 'function') {
+                try { folder = await lfs.getDataFolder(); } catch (_) {}
+            }
+            if (!folder) return null;
+
+            var file = await folder.createFile(filename, { overwrite: true });
+            if (!file) return null;
+
+            var fmt = storage.formats && storage.formats.utf8 ? { format: storage.formats.utf8 } : {};
+            await file.write(content, fmt);
+            Logger.info('Temp save: ' + (file.nativePath || file.name));
+            return { name: file.name, nativePath: file.nativePath || null };
+        } catch (e) {
+            Logger.debug('_saveTempFile failed: ' + e.message);
+            return null;
         }
-        function toTime(secs) {
-            // Convert seconds to FCPXML rational time string
-            var ms = Math.max(0, Math.round(secs * 1000));
-            return ms + '/1000s';
-        }
-
-        var lines = decisions.map(function(d) {
-            var label = '[' + d.type.toUpperCase() + '] ' + (d.description || '');
-            var note  = Math.round((d.confidence || 0) * 100) + '% confident — ' + (d.reason || '');
-            return '        <marker start="' + toTime(d.timelineOffset) + '" duration="1/25s"' +
-                   ' value="' + escAttr(label) + '" note="' + escAttr(note) + '"/>';
-        });
-
-        var inject = '\n' + lines.join('\n') + '\n    ';
-
-        // Insert before the closing </sequence> tag
-        var idx = xml.indexOf('</sequence>');
-        if (idx !== -1) {
-            return xml.slice(0, idx) + inject + xml.slice(idx);
-        }
-
-        // Fallback: append before </fcpxml>
-        var fIdx = xml.indexOf('</fcpxml>');
-        if (fIdx !== -1) {
-            return xml.slice(0, fIdx) + '<!-- AMBAR DECISIONS -->\n' + lines.join('\n') + '\n' + xml.slice(fIdx);
-        }
-
-        return xml; // unchanged if no suitable insertion point found
     },
 
-    // Save a string as a file — UXP storage API with browser download fallback
-    _saveFile: async function(content, filename) {
-        var self = this;
+    // Save a string as a file — UXP storage API with browser download fallback.
+    // ext: 'xml' for XMEML, 'fcpxml' for FCPXML (controls the Save dialog filter).
+    // Returns { name, nativePath } on success, null if user cancelled.
+    _saveFile: async function(content, filename, ext) {
+        var self      = this;
+        var fileTypes = (ext === 'xml') ? ['xml'] : ['fcpxml', 'xml'];
 
         // UXP path — opens native Save As dialog
         if (typeof require !== 'undefined') {
@@ -796,13 +875,13 @@ const UIController = {
                 var storage = uxpMod && uxpMod.storage;
                 var lfs     = storage && storage.localFileSystem;
                 if (lfs && typeof lfs.getFileForSaving === 'function') {
-                    var file = await lfs.getFileForSaving(filename, { types: ['fcpxml', 'xml'] });
-                    if (!file) return; // user cancelled
+                    var file = await lfs.getFileForSaving(filename, { types: fileTypes });
+                    if (!file) return null; // user cancelled
                     var fmt = storage.formats && storage.formats.utf8
                               ? { format: storage.formats.utf8 } : {};
                     await file.write(content, fmt);
                     Logger.info('Exported: ' + file.name);
-                    return;
+                    return { name: file.name, nativePath: file.nativePath || null };
                 }
             } catch (e) {
                 Logger.warn('UXP save failed, trying browser download: ' + e.message);
@@ -822,6 +901,7 @@ const UIController = {
             setTimeout(function() {
                 try { document.body.removeChild(a); URL.revokeObjectURL(url); } catch (_) {}
             }, 2000);
+            return { name: filename, nativePath: null };
         } catch (e) {
             throw new Error('Could not save file: ' + e.message);
         }
@@ -862,37 +942,102 @@ const UIController = {
         if (!list) return;
         list.innerHTML = '';
 
-        // Approve-all / Reject-all bar
+        // ── Approve All / Reject All bar ──────────────────────────────
+        // UXP blocks onclick in innerHTML — must use createElement + addEventListener
         var bar = document.createElement('div');
-        bar.style.cssText = 'display:flex;gap:6px;margin-bottom:6px;';
-        bar.innerHTML =
-            '<button class="secondary-btn" style="font-size:11px;padding:5px 10px;" onclick="UIController.approveAll()">✓ Approve All</button>' +
-            '<button class="ghost-btn"     style="font-size:11px;padding:5px 10px;" onclick="UIController.rejectAll()">✕ Reject All</button>';
+        bar.style.cssText = 'display:flex;gap:6px;margin-bottom:8px;';
+
+        var approveAllBtn = document.createElement('button');
+        approveAllBtn.className = 'secondary-btn';
+        approveAllBtn.style.cssText = 'font-size:11px;padding:5px 10px;flex:1;';
+        approveAllBtn.textContent = '✓ Approve All';
+        approveAllBtn.addEventListener('click', function() { UIController.approveAll(); });
+        bar.appendChild(approveAllBtn);
+
+        var rejectAllBtn = document.createElement('button');
+        rejectAllBtn.className = 'ghost-btn';
+        rejectAllBtn.style.cssText = 'font-size:11px;padding:5px 10px;flex:1;';
+        rejectAllBtn.textContent = '✕ Reject All';
+        rejectAllBtn.addEventListener('click', function() { UIController.rejectAll(); });
+        bar.appendChild(rejectAllBtn);
+
         list.appendChild(bar);
 
+        // ── Decision items ─────────────────────────────────────────────
         result.decisions.forEach(function(d, idx) {
             var tagClass = d.type === 'cut' ? 'silence' : (d.type === 'broll' ? 'broll' : 'story');
-            var tagLabel = d.type.toUpperCase();
-            var timeStr  = self._formatTime(d.timelineOffset);
             var confPct  = Math.round((d.confidence || 0) * 100);
             var durStr   = d.duration ? ' · ' + d.duration.toFixed(1) + 's' : '';
 
+            // Wrapper
             var item = document.createElement('div');
             item.className = 'decision-item';
             item.id = 'decision-' + idx;
-            item.innerHTML =
-                '<div class="decision-main">' +
-                    '<div class="decision-meta">' +
-                        '<span class="tag ' + tagClass + '">' + tagLabel + '</span>' +
-                        '<span class="decision-time">' + timeStr + durStr + '</span>' +
-                        '<span class="badge">' + confPct + '%</span>' +
-                    '</div>' +
-                    '<div class="decision-desc">' + self._escapeHtml(d.description || '') + '</div>' +
-                '</div>' +
-                '<div class="decision-actions">' +
-                    '<button class="decision-approve" id="approve-' + idx + '" onclick="UIController.approveDecision(' + idx + ')" title="Approve">✓</button>' +
-                    '<button class="decision-reject"  id="reject-'  + idx + '" onclick="UIController.rejectDecision('  + idx + ')" title="Reject">✕</button>' +
-                '</div>';
+
+            // ── Main content column ──
+            var main = document.createElement('div');
+            main.className = 'decision-main';
+
+            // Meta row: tag + time + confidence
+            var meta = document.createElement('div');
+            meta.className = 'decision-meta';
+
+            var tag = document.createElement('span');
+            tag.className = 'tag ' + tagClass;
+            tag.textContent = d.type.toUpperCase();
+            meta.appendChild(tag);
+
+            var timeEl = document.createElement('span');
+            timeEl.className = 'decision-time';
+            timeEl.textContent = self._formatTime(d.timelineOffset) + durStr;
+            meta.appendChild(timeEl);
+
+            var badge = document.createElement('span');
+            badge.className = 'badge';
+            badge.textContent = confPct + '%';
+            meta.appendChild(badge);
+
+            main.appendChild(meta);
+
+            var desc = document.createElement('div');
+            desc.className = 'decision-desc';
+            desc.textContent = d.description || '';
+            main.appendChild(desc);
+
+            if (d.reason) {
+                var reason = document.createElement('div');
+                reason.className = 'decision-reason';
+                reason.textContent = d.reason;
+                main.appendChild(reason);
+            }
+
+            item.appendChild(main);
+
+            // ── Approve / Reject buttons ──
+            var actions = document.createElement('div');
+            actions.className = 'decision-actions';
+
+            var approveBtn = document.createElement('button');
+            approveBtn.className = 'decision-approve';
+            approveBtn.id = 'approve-' + idx;
+            approveBtn.title = 'Approve';
+            approveBtn.textContent = '✓';
+            approveBtn.addEventListener('click', (function(i) {
+                return function() { UIController.approveDecision(i); };
+            })(idx));
+            actions.appendChild(approveBtn);
+
+            var rejectBtn = document.createElement('button');
+            rejectBtn.className = 'decision-reject';
+            rejectBtn.id = 'reject-' + idx;
+            rejectBtn.title = 'Reject';
+            rejectBtn.textContent = '✕';
+            rejectBtn.addEventListener('click', (function(i) {
+                return function() { UIController.rejectDecision(i); };
+            })(idx));
+            actions.appendChild(rejectBtn);
+
+            item.appendChild(actions);
             list.appendChild(item);
         });
 
@@ -900,66 +1045,92 @@ const UIController = {
         var emptyEl   = document.getElementById('reviewEmptyState');
         if (resultsEl) resultsEl.style.display = '';
         if (emptyEl)   emptyEl.style.display   = 'none';
+
+        self._updateExportBtn();
     },
+
+    // ── Decision approve / reject ─────────────────────────────────────
 
     approveDecision: function(idx) {
         var decisions = UIState.getState('editDecisions');
-        if (!decisions || !decisions[idx]) return;
+        if (!decisions || idx < 0 || idx >= decisions.length) return;
         var d = decisions[idx];
+        // Toggle: clicking approve again reverts to pending
         d.status = (d.status === 'approved') ? 'pending' : 'approved';
+        this._refreshDecisionItem(idx, d);
+        this._updateExportBtn();
+    },
 
+    rejectDecision: function(idx) {
+        var decisions = UIState.getState('editDecisions');
+        if (!decisions || idx < 0 || idx >= decisions.length) return;
+        var d = decisions[idx];
+        // Toggle: clicking reject again reverts to pending
+        d.status = (d.status === 'rejected') ? 'pending' : 'rejected';
+        this._refreshDecisionItem(idx, d);
+        this._updateExportBtn();
+    },
+
+    // Force all to approved (does not toggle — idempotent)
+    approveAll: function() {
+        var decisions = UIState.getState('editDecisions');
+        if (!decisions) return;
+        for (var i = 0; i < decisions.length; i++) {
+            decisions[i].status = 'approved';
+            this._refreshDecisionItem(i, decisions[i]);
+        }
+        this._updateExportBtn();
+    },
+
+    // Force all to rejected (does not toggle — idempotent)
+    rejectAll: function() {
+        var decisions = UIState.getState('editDecisions');
+        if (!decisions) return;
+        for (var i = 0; i < decisions.length; i++) {
+            decisions[i].status = 'rejected';
+            this._refreshDecisionItem(i, decisions[i]);
+        }
+        this._updateExportBtn();
+    },
+
+    // Update a single decision item's visual state
+    _refreshDecisionItem: function(idx, d) {
         var item       = document.getElementById('decision-' + idx);
         var approveBtn = document.getElementById('approve-' + idx);
         var rejectBtn  = document.getElementById('reject-' + idx);
 
         if (item) {
-            item.classList.remove('approved', 'rejected');
+            // Separate calls — UXP's classList.remove() may not support multiple args
+            item.classList.remove('approved');
+            item.classList.remove('rejected');
             if (d.status === 'approved') item.classList.add('approved');
+            if (d.status === 'rejected') item.classList.add('rejected');
         }
         if (approveBtn) {
             if (d.status === 'approved') approveBtn.classList.add('on');
             else                         approveBtn.classList.remove('on');
         }
-        if (rejectBtn) rejectBtn.classList.remove('on');
-
-        UIState.setState('editDecisions', decisions);
-    },
-
-    rejectDecision: function(idx) {
-        var decisions = UIState.getState('editDecisions');
-        if (!decisions || !decisions[idx]) return;
-        var d = decisions[idx];
-        d.status = (d.status === 'rejected') ? 'pending' : 'rejected';
-
-        var item       = document.getElementById('decision-' + idx);
-        var approveBtn = document.getElementById('approve-' + idx);
-        var rejectBtn  = document.getElementById('reject-' + idx);
-
-        if (item) {
-            item.classList.remove('approved', 'rejected');
-            if (d.status === 'rejected') item.classList.add('rejected');
-        }
         if (rejectBtn) {
             if (d.status === 'rejected') rejectBtn.classList.add('on');
             else                         rejectBtn.classList.remove('on');
         }
-        if (approveBtn) approveBtn.classList.remove('on');
-
-        UIState.setState('editDecisions', decisions);
     },
 
-    approveAll: function() {
-        var decisions = UIState.getState('editDecisions');
-        if (!decisions) return;
-        var self = this;
-        decisions.forEach(function(_, idx) { self.approveDecision(idx); });
-    },
-
-    rejectAll: function() {
-        var decisions = UIState.getState('editDecisions');
-        if (!decisions) return;
-        var self = this;
-        decisions.forEach(function(_, idx) { self.rejectDecision(idx); });
+    // Enable / disable Export button based on approved count
+    _updateExportBtn: function() {
+        var decisions = UIState.getState('editDecisions') || [];
+        var approved  = 0;
+        for (var i = 0; i < decisions.length; i++) {
+            if (decisions[i].status === 'approved') approved++;
+        }
+        var btn  = document.getElementById('exportBtn');
+        var hint = document.getElementById('exportHint');
+        if (btn) btn.disabled = (approved === 0);
+        if (hint) {
+            hint.textContent = approved > 0
+                ? approved + ' decision' + (approved === 1 ? '' : 's') + ' approved — ready to export'
+                : 'Approve decisions above to enable export';
+        }
     },
 
     _updateReviewBadge: function(count) {

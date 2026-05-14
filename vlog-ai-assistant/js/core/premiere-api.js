@@ -617,6 +617,81 @@ const PremiereAPI = {
         }
     },
 
+    // ── File import ───────────────────────────────────────────────────
+
+    /**
+     * Import a file (e.g. an FCPXML) into the active Premiere project.
+     * The file path must be an absolute native path string.
+     * Returns true on success, false if unavailable or failed.
+     */
+    async importFile(nativePath) {
+        try {
+            var ppro = this._load();
+            if (!ppro) return false;
+
+            // Resolve project — sync first, then async fallback
+            var project = null;
+            try { project = this.getActiveProject(); } catch (_) {}
+            if (!project) {
+                try { project = await ppro.Project.getActiveProject(); } catch (_) {}
+            }
+            if (!project) {
+                Logger.warn('importFile: no active project');
+                return false;
+            }
+
+            // Try every known import API shape across Premiere UXP versions
+            var methods = [
+                // Standard UXP API (Premiere 22+)
+                async function() {
+                    if (typeof project.importFiles === 'function') {
+                        await project.importFiles([nativePath]);
+                        return true;
+                    }
+                },
+                // Singular form
+                async function() {
+                    if (typeof project.importFile === 'function') {
+                        await project.importFile(nativePath);
+                        return true;
+                    }
+                },
+                // importMedia (seen in some versions)
+                async function() {
+                    if (typeof project.importMedia === 'function') {
+                        await project.importMedia([nativePath]);
+                        return true;
+                    }
+                },
+                // ppro.Importer static
+                async function() {
+                    if (ppro.Importer && typeof ppro.Importer.importFiles === 'function') {
+                        await ppro.Importer.importFiles([nativePath]);
+                        return true;
+                    }
+                },
+            ];
+
+            for (var i = 0; i < methods.length; i++) {
+                try {
+                    var ok = await methods[i]();
+                    if (ok) {
+                        Logger.info('importFile: imported via method #' + i + ': ' + nativePath);
+                        return true;
+                    }
+                } catch (me) {
+                    Logger.debug('importFile method #' + i + ' threw: ' + me.message);
+                }
+            }
+
+            Logger.warn('importFile: no import API available — open the file manually in Premiere (File → Import)');
+            return false;
+        } catch (e) {
+            Logger.warn('importFile failed: ' + e.message);
+            return false;
+        }
+    },
+
     getSequenceDuration(sequence) {
         try {
             if (!sequence) return 0;
