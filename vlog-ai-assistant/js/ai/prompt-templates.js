@@ -240,45 +240,68 @@ const PromptTemplates = {
      * transcriptBlocks: [{ startSeconds, endSeconds, text }] — from TimelineEditor._lastTranscriptBlocks
      * availableClips:   [{ name, mediaPath, durationSeconds, binName }] — from CEP getBrollClips
      */
-    getBrollMatchingPrompt: function(transcriptBlocks, availableClips) {
-        var blockLines = '';
-        for (var i = 0; i < transcriptBlocks.length; i++) {
-            var b = transcriptBlocks[i];
-            blockLines += '[' + b.startSeconds.toFixed(1) + 's – ' + b.endSeconds.toFixed(1) + 's] ' + b.text + '\n';
+    getBrollMatchingPrompt: function(transcriptBlocks, availableClips, v1DurationSecs) {
+        var budgetSecs = Math.floor((v1DurationSecs || 0) * 0.40);
+        var totalSecs  = Math.round(v1DurationSecs || 0);
+
+        var clipList = [];
+        for (var ci = 0; ci < availableClips.length; ci++) {
+            var cc = availableClips[ci];
+            var cd = (cc.durationSeconds != null) ? cc.durationSeconds.toFixed(1) + 's' : 'unknown';
+            var cat = cc.binName || cc.category || 'unknown';
+            clipList.push('[' + (ci + 1) + '] name="' + (cc.name || 'Unnamed') + '" path="' + (cc.mediaPath || '') + '" category=' + cat + ' available=' + cd);
         }
 
-        var clipLines = '';
-        for (var j = 0; j < availableClips.length; j++) {
-            var c = availableClips[j];
-            var dur = c.durationSeconds ? ' (' + c.durationSeconds.toFixed(1) + 's)' : '';
-            var bin = c.binName ? ' [' + c.binName + ']' : '';
-            clipLines += '  • ' + c.name + dur + bin + '\n';
+        var blockList = [];
+        for (var bi = 0; bi < transcriptBlocks.length; bi++) {
+            var bb = transcriptBlocks[bi];
+            var ts = (bb.startSeconds != null) ? bb.startSeconds.toFixed(1) + 's–' + bb.endSeconds.toFixed(1) + 's' : '';
+            blockList.push('[' + (bi + 1) + '] ' + ts + ': "' + (bb.text || '').replace(/\n/g, ' ') + '"');
         }
 
         return (
-            'TRANSCRIPT BLOCKS (with timestamps):\n' +
-            (blockLines || '(no transcript available)\n') +
-            '\nAVAILABLE PROJECT CLIPS:\n' +
-            (clipLines || '(no clips found)\n') +
-            '\nRULES:\n' +
-            '- clipName must EXACTLY match a name from AVAILABLE PROJECT CLIPS (including extension)\n' +
-            '- atSeconds is the sequence timeline position where the B-roll should START (float)\n' +
-            '- durationSeconds: how long to show the clip (min 2.0s, max = clip duration shown above)\n' +
-            '- Only suggest B-roll where the speaker describes something visual (location, product, action)\n' +
-            '- Do NOT cover talking-head moments — only cover content that benefits from visual reinforcement\n' +
-            '- Clips in "🎙 Talking Head" bin should NEVER be used as B-roll\n' +
-            '- Suggest 3–8 placements total\n' +
-            '\nReturn ONLY valid JSON:\n' +
+            'You are a professional vlog editor with 10 years experience.\n' +
+            'Your job: place B-roll over a talking-head video. You think like a SURGEON —\n' +
+            'cut precisely, only where it adds value, never as decoration.\n\n' +
+            'VIDEO LENGTH: ' + totalSecs + ' seconds\n' +
+            'TOTAL B-ROLL BUDGET: ' + budgetSecs + ' seconds maximum (40% of video)\n\n' +
+            'NON-NEGOTIABLE RULES:\n' +
+            '1. Each B-roll shot: EXACTLY 4–6 seconds (not more, not less)\n' +
+            '2. Minimum 10 seconds of talking head between ANY two B-roll shots\n' +
+            '3. No B-roll in first 6 seconds — viewer must connect with speaker first\n' +
+            '4. No B-roll in last 6 seconds — always end on the speaker\'s face\n' +
+            '5. Only place B-roll when speaker explicitly names, describes or refers to\n' +
+            '   something a clip can VISUALLY SHOW. "I went to the temple" + temple clip = YES.\n' +
+            '   "it was amazing" + any clip = NO (too vague).\n' +
+            '6. If no clip DIRECTLY matches what is being said: place NOTHING\n' +
+            '7. Maximum 3–4 placements total for a video under 3 minutes\n' +
+            '8. Confidence must be 0.85 or higher — if unsure, skip it\n\n' +
+            'THINKING PROCESS (apply to every transcript block):\n' +
+            '  Step 1: What is the speaker SHOWING or DESCRIBING in concrete visual terms?\n' +
+            '  Step 2: Is there a clip that shows EXACTLY that? (not vaguely, EXACTLY)\n' +
+            '  Step 3: What is the BEST 4–6 second moment in that clip to use? (clipStartSec)\n' +
+            '  Step 4: Will there be at least 10s of talking head before and after?\n' +
+            '  Step 5: Only if ALL answers are yes: add to placements\n\n' +
+            'TRANSCRIPT BLOCKS:\n' +
+            (blockList.join('\n') || '(no transcript)') + '\n\n' +
+            'AVAILABLE CLIPS (use the exact path value in your response):\n' +
+            (clipList.join('\n') || '(no clips)') + '\n\n' +
+            'Return ONLY this JSON — no explanation, no markdown:\n' +
             '{\n' +
+            '  "reasoning": "2–3 sentences explaining your selection decisions",\n' +
             '  "placements": [\n' +
             '    {\n' +
-            '      "clipName": "DJI_0042.mp4",\n' +
-            '      "atSeconds": 12.5,\n' +
-            '      "durationSeconds": 5.0,\n' +
-            '      "reason": "Speaker mentions the market — aerial shot reinforces the location"\n' +
+            '      "atSec": 18.0,\n' +
+            '      "durationSec": 5.0,\n' +
+            '      "clipName": "ZVE100720.MP4",\n' +
+            '      "clipPath": "/exact/path/from/above",\n' +
+            '      "clipStartSec": 0.0,\n' +
+            '      "reason": "Speaker says the temple had colorful decorations at 18s — clip shows temple facade",\n' +
+            '      "confidence": 0.91\n' +
             '    }\n' +
             '  ]\n' +
-            '}'
+            '}\n\n' +
+            'If no placements meet all criteria, return: { "reasoning": "...", "placements": [] }'
         );
     },
 

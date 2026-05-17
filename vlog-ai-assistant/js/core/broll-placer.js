@@ -47,8 +47,14 @@ const BrollPlacer = {
             return { success: false, error: 'No clips in project. Import media first.' };
         }
 
+        // ── Get V1 duration and send to text LLM for matching ─────────────────
+        var v1DurationSecs = 0;
+        try {
+            v1DurationSecs = await this._getV1DurationSecs();
+        } catch (_) { v1DurationSecs = 0; }
+
         // ── Send to text LLM for matching ─────────────────────────────────────
-        const prompt = PromptTemplates.getBrollMatchingPrompt(blocks, brollClips);
+        const prompt = PromptTemplates.getBrollMatchingPrompt(blocks, brollClips, v1DurationSecs);
         Logger.info('[BrollPlacer] Prompt length: ' + prompt.length + ' chars');
 
         // sendPrompt() returns { text: string } — NOT { success, text }
@@ -82,38 +88,102 @@ const BrollPlacer = {
 
         var placements = Array.isArray(parsed && parsed.placements) ? parsed.placements : [];
         Logger.info('[BrollPlacer] AI returned ' + placements.length + ' placement(s)');
+        if (parsed && parsed.reasoning) {
+            Logger.info('[BrollPlacer] AI reasoning: ' + parsed.reasoning);
+        }
 
         // ── Resolve clip names → media paths ─────────────────────────────────
         var resolved = [];
         for (var i = 0; i < placements.length; i++) {
             var p = placements[i];
-            if (!p.clipName || p.atSeconds === undefined) continue;
+            var atVal = (p.atSeconds !== undefined) ? p.atSeconds : (p.atSec !== undefined ? p.atSec : undefined);
+            if (!p.clipName && !p.clipPath) {
+                Logger.warn('[BrollPlacer] Placement missing clipName/clipPath — skipping: ' + JSON.stringify(p));
+                continue;
+            }
+
+            // Flexible matching: prefer exact name, then basename of mediaPath, then substring
+            var wantedName = (p.clipName || '').toString();
+            var wantedPath = p.clipPath || p.mediaPath || '';
 
             var mediaPath = null;
-            var clipDur   = 0;
+            var clipDur = 0;
+
+            // 1) exact name match (case-insensitive)
             for (var j = 0; j < brollClips.length; j++) {
-                if (brollClips[j].name.toLowerCase() === p.clipName.toLowerCase()) {
-                    mediaPath = brollClips[j].mediaPath;
-                    clipDur   = brollClips[j].durationSeconds || 0;
-                    break;
+                try {
+                    if (brollClips[j].name && wantedName && brollClips[j].name.toLowerCase() === wantedName.toLowerCase()) {
+                        mediaPath = brollClips[j].mediaPath;
+                        clipDur = brollClips[j].durationSeconds || 0;
+                        break;
+                    }
+                } catch (_) {}
+            }
+
+            // 2) match by basename of mediaPath if provided by AI
+            if (!mediaPath && wantedName) {
+                var wn = wantedName.toLowerCase();
+                for (var j2 = 0; j2 < brollClips.length; j2++) {
+                    try {
+                        var bn = (brollClips[j2].mediaPath || '').split(/[\\\/]/).pop() || '';
+                        if (bn.toLowerCase() === wn) {
+                            mediaPath = brollClips[j2].mediaPath;
+                            clipDur = brollClips[j2].durationSeconds || 0;
+                            break;
+                        }
+                    } catch (_) {}
+                }
+            }
+
+            // 3) if AI provided full clipPath, match by that
+            if (!mediaPath && wantedPath) {
+                for (var j3 = 0; j3 < brollClips.length; j3++) {
+                    try {
+                        if ((brollClips[j3].mediaPath || '').toLowerCase() === wantedPath.toLowerCase()) {
+                            mediaPath = brollClips[j3].mediaPath;
+                            clipDur = brollClips[j3].durationSeconds || 0;
+                            break;
+                        }
+                    } catch (_) {}
+                }
+            }
+
+            // 4) fuzzy substring match (clip name contains wantedName or vice versa)
+            if (!mediaPath && wantedName) {
+                var wn2 = wantedName.toLowerCase();
+                for (var j4 = 0; j4 < brollClips.length; j4++) {
+                    try {
+                        var cn = (brollClips[j4].name || '').toLowerCase();
+                        if (cn.indexOf(wn2) !== -1 || wn2.indexOf(cn) !== -1) {
+                            mediaPath = brollClips[j4].mediaPath;
+                            clipDur = brollClips[j4].durationSeconds || 0;
+                            break;
+                        }
+                    } catch (_) {}
                 }
             }
 
             if (!mediaPath) {
-                Logger.warn('[BrollPlacer] No mediaPath for "' + p.clipName + '" — skipping');
+                Logger.warn('[BrollPlacer] No mediaPath found for AI suggestion: ' + JSON.stringify(p));
                 continue;
             }
 
-            var dur = p.durationSeconds || 5;
+            var dur = (p.durationSeconds !== undefined) ? p.durationSeconds : (p.durationSec !== undefined ? p.durationSec : 5);
             if (clipDur > 0) dur = Math.min(dur, clipDur);
 
+            // If atVal undefined, try atSec/atSeconds fields
+            if (atVal === undefined) atVal = (p.atSec !== undefined ? p.atSec : (p.atSeconds !== undefined ? p.atSeconds : 0));
+
             resolved.push({
-                clipName:        p.clipName,
+                clipName:        p.clipName || (wantedPath.split(/[\\\/]/).pop() || 'Unnamed'),
                 mediaPath:       mediaPath,
-                atSeconds:       p.atSeconds,
+                atSeconds:       atVal,
                 durationSeconds: dur,
+                clipStartSec:    typeof p.clipStartSec === 'number' ? p.clipStartSec : 0,
+                confidence:      typeof p.confidence === 'number' ? p.confidence : 1.0,
                 reason:          p.reason || '',
             });
+            Logger.info('[BrollPlacer] Resolved placement -> ' + (p.clipName || '') + ' => ' + mediaPath + ' @' + atVal + 's dur ' + dur + 's');
         }
 
         this._lastPlan = { placements: resolved, brollClips: brollClips };
@@ -125,6 +195,16 @@ const BrollPlacer = {
     async commitBroll(plan) {
         var placements = plan && plan.placements ? plan.placements : [];
         Logger.info('[BrollPlacer] commitBroll: ' + placements.length + ' clip(s) to place');
+
+        // Validate and trim the plan against V1 duration and editorial rules
+        var v1Duration = 0;
+        try { v1Duration = await this._getV1DurationSecs(); } catch (_) { v1Duration = 0; }
+        var safePlan = this._validateAndTrimPlan({ placements: placements }, v1Duration);
+        if (!safePlan || safePlan.length === 0) {
+            Logger.info('[BrollPlacer] No valid placements after validation');
+            return { success: false, placed: 0, total: (placements ? placements.length : 0), errors: ['No valid placements after validation'], error: 'No valid placements after validation' };
+        }
+        Logger.info('[BrollPlacer] Placing ' + safePlan.length + ' validated placement(s)');
 
         var placed = 0;
         var errors = [];
@@ -190,10 +270,20 @@ const BrollPlacer = {
                 }
             } else {
                 // ── CEP bridge fallback ───────────────────────────────────────
+                // Skip if V2 is already occupied at this position
+                var hasOverlap = await this._v2HasClipAt(p.atSeconds, p.durationSeconds, sequence);
+                if (hasOverlap) {
+                    Logger.warn('[BrollPlacer] Skipping "' + p.clipName + '" — V2 overlap at ' + p.atSeconds + 's');
+                    errors.push('"' + p.clipName + '": skipped — V2 already occupied at ' + p.atSeconds.toFixed(1) + 's');
+                    continue;
+                }
                 try {
                     var result = await CEPBridge.sendCommand('placeBroll', {
-                        clipMediaPath: p.mediaPath,
-                        startSeconds:  p.atSeconds,
+                        mediaPath:    p.mediaPath,
+                        startSecs:    p.atSeconds,
+                        durationSecs: p.durationSeconds,
+                        trackIndex:   1,
+                        sourceInSecs: p.clipStartSec || 0,
                     }, 30000);
                     if (result && result.success) {
                         placed++;
@@ -264,6 +354,140 @@ const BrollPlacer = {
 
         await walk(project.rootItem);
         return found;
+    },
+
+    async _getV1DurationSecs() {
+        try {
+            var ppro = require('premierepro');
+            var project = await ppro.Project.getActiveProject();
+            var seq = null;
+            try { seq = project.activeSequence || await project.getActiveSequence(); } catch (_) { try { seq = await project.getActiveSequence(); } catch (_) { seq = project.activeSequence; } }
+            Logger.info('[BrollPlacer] _getV1DurationSecs: project=' + (!!project) + ' seq=' + (!!seq));
+            if (!seq) return 0;
+            // Try several shapes that the UXP proxy may expose
+            try {
+                var end = null;
+                try { end = await seq.end; } catch (_) { end = seq.end; }
+                Logger.info('[BrollPlacer] _getV1DurationSecs: seq.end=' + (end ? JSON.stringify(end).slice(0,200) : 'null'));
+                if (end) {
+                    if (end.ticks !== undefined && end.ticks !== null) return Number(end.ticks) / 254016000000;
+                    if (end.seconds !== undefined && end.seconds !== null) return Number(end.seconds);
+                    // If end is a string or number
+                    if (typeof end === 'number') return Number(end);
+                    if (typeof end === 'string' && end.match(/^[0-9]+$/)) return Number(end) / 254016000000;
+                }
+            } catch (_) {}
+
+            try {
+                Logger.info('[BrollPlacer] _getV1DurationSecs: checking seq.end.ticks fallback');
+                if (seq.end && seq.end.ticks !== undefined) return Number(seq.end.ticks) / 254016000000;
+            } catch (_) {}
+
+            try {
+                Logger.info('[BrollPlacer] _getV1DurationSecs: checking seq.duration');
+                if (seq.duration && seq.duration.seconds !== undefined) return Number(seq.duration.seconds);
+            } catch (_) {}
+
+            // Fallback: derive from V1 clips end time
+            try {
+                var vTracks = seq.videoTracks;
+                Logger.info('[BrollPlacer] _getV1DurationSecs: vTracks=' + (vTracks ? vTracks.numTracks : 'null'));
+                if (vTracks && vTracks.numTracks > 0) {
+                    var track = vTracks[0];
+                    var maxEnd = 0;
+                    for (var ci = 0; ci < track.clips.numItems; ci++) {
+                        try { var ce = track.clips[ci].end.seconds; if (ce && ce > maxEnd) maxEnd = ce; } catch (_) {}
+                    }
+                    if (maxEnd > 0) return Number(maxEnd);
+                }
+            } catch (_) {}
+
+            // Final fallback: use transcript blocks last end time if available
+            try {
+                if (TimelineEditor && Array.isArray(TimelineEditor._lastTranscriptBlocks) && TimelineEditor._lastTranscriptBlocks.length) {
+                    var last = TimelineEditor._lastTranscriptBlocks[TimelineEditor._lastTranscriptBlocks.length - 1];
+                    if (last && last.endSeconds) {
+                        Logger.info('[BrollPlacer] _getV1DurationSecs: falling back to transcript endSeconds = ' + last.endSeconds);
+                        return Number(last.endSeconds);
+                    }
+                }
+            } catch (_) {}
+
+            return 0;
+        } catch (e) {
+            return 0;
+        }
+    },
+
+    // Check if V2 (tracks[1]) already has a clip that overlaps [startSecs, startSecs+durationSecs].
+    // Returns false if sequence is null or V2 doesn't exist yet — safe to place in those cases.
+    async _v2HasClipAt(startSecs, durationSecs, sequence) {
+        try {
+            if (!sequence) return false;
+            const ppro   = require('premierepro');
+            const tracks = await sequence.getVideoTracks();
+            if (!tracks || tracks.length < 2) return false;
+            const v2clips  = await tracks[1].getClips();
+            const endSecs  = startSecs + (durationSecs || 0);
+            for (const clip of v2clips) {
+                const cs = Number((await clip.getStartTime()).ticks) / 254016000000;
+                const ce = Number((await clip.getEndTime()).ticks)   / 254016000000;
+                if (cs < endSecs && ce > startSecs) return true;
+            }
+            return false;
+        } catch (e) {
+            return false; // if we can't check, allow placement
+        }
+    },
+
+    _validateAndTrimPlan(plan, v1DurationSecs) {
+        var MAX_COVERAGE = 0.40;  // matches prompt's 40% budget
+        var MIN_CLIP_SEC = 4.0;   // matches prompt's 4–6s rule
+        var MAX_CLIP_SEC = 6.0;
+        var MIN_GAP_SEC  = 10.0;  // matches prompt's 10s minimum gap
+        var KEEP_START_SEC = 6.0; // matches prompt's 6s no-broll zone
+        var KEEP_END_SEC   = 6.0; // matches prompt's 6s no-broll zone
+
+        var validated = (plan && plan.placements ? plan.placements.slice() : [])
+            .map(function(p) {
+                return {
+                    clipName: p.clipName || p.clipName,
+                    mediaPath: p.mediaPath || p.clipPath || p.mediaPath,
+                    atSeconds: (p.atSeconds !== undefined) ? p.atSeconds : (p.atSec !== undefined ? p.atSec : 0),
+                    durationSeconds: Math.max(MIN_CLIP_SEC, Math.min(MAX_CLIP_SEC, (p.durationSeconds || p.durationSec || 5))) ,
+                    confidence: (p.confidence !== undefined) ? p.confidence : (p.confidence || 1.0),
+                    reason: p.reason || ''
+                };
+            })
+            .filter(function(p) {
+                return p.atSeconds >= KEEP_START_SEC && (p.atSeconds + p.durationSeconds) <= (v1DurationSecs - KEEP_END_SEC);
+            })
+            .filter(function(p) { return (p.confidence || 0) >= 0.85; })
+            .sort(function(a, b) { return a.atSeconds - b.atSeconds; });
+
+        var gapped = [];
+        var lastEndSec = -9999;
+        for (var i = 0; i < validated.length; i++) {
+            var p = validated[i];
+            if (p.atSeconds >= lastEndSec + MIN_GAP_SEC) {
+                gapped.push(p);
+                lastEndSec = p.atSeconds + p.durationSeconds;
+            }
+        }
+
+        var budgetSecs = v1DurationSecs * MAX_COVERAGE;
+        var final = [];
+        var usedSecs = 0;
+        for (var k = 0; k < gapped.length; k++) {
+            var q = gapped[k];
+            if (usedSecs + q.durationSeconds <= budgetSecs) {
+                final.push(q);
+                usedSecs += q.durationSeconds;
+            }
+        }
+
+        Logger.info('[BrollPlacer] Validated: ' + final.length + ' of ' + (plan.placements ? plan.placements.length : 0) + ' placements, covering ' + usedSecs.toFixed(1) + 's of ' + v1DurationSecs.toFixed(1) + 's V1');
+        return final;
     },
 };
 
