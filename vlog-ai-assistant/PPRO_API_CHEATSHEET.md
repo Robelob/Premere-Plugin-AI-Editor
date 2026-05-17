@@ -243,15 +243,95 @@ await clip.setColorLabel(5); // "Mango" ≈ yellow for b-roll
 
 ## 9. Transcripts (Premiere's native transcription)
 
+### ⚠️ IMPORTANT: sequence-level transcript is NOT accessible via UXP API
+
+`sequence.getTranscript()` does NOT exist. `ppro.Transcript.exportToJSON(sequence)` throws "Invalid parameter".  
+Sequence transcripts are only exposed in the UI (Text panel); the UXP API only exposes **source clip** transcripts.
+
+### Correct pattern — read clip transcripts and remap to sequence time
+
 ```js
-// Requires Premiere's AI transcription to have run on the clip first
-const transcript = await sequence.getTranscript?.();
-// Returns structured data — format spec in AdobeDocs repo:
-// sample-panels/premiere-api/html/assets/transcript_format_spec.json
-// Words have: { word, startTime (ticks), endTime (ticks), confidence }
+// Prerequisite: user must have run Speech to Text on each SOURCE CLIP
+//   Window → Text → select clip in Project panel → Transcribe (NOT "Transcribe Sequence")
+
+async function getAllClipTranscripts(sequence) {
+  const ppro = require('premierepro');
+  const results = [];
+
+  const videoTracks = await sequence.getVideoTracks();
+  const track = videoTracks[0]; // V1 = A-roll
+  const clips = await track.getClips();
+
+  for (const clip of clips) {
+    const projItem = await clip.getProjectItem();
+    const clipPI = ppro.ClipProjectItem.cast(projItem);
+    if (!clipPI) continue;
+
+    let transcriptJSON;
+    try {
+      transcriptJSON = await ppro.Transcript.exportToJSON(clipPI); // takes ClipProjectItem, NOT Sequence
+    } catch (e) {
+      continue; // clip not transcribed
+    }
+    if (!transcriptJSON) continue;
+
+    const transcript = JSON.parse(transcriptJSON);
+
+    // Word timestamps are SOURCE-CLIP-RELATIVE — add clip's sequence start to convert
+    const clipStartTicks = (await clip.getStartTime()).ticks; // BigInt
+
+    for (const segment of transcript.segments ?? []) {
+      for (const word of segment.words ?? []) {
+        results.push({
+          word:       word.word,
+          startTicks: BigInt(word.startTime) + clipStartTicks, // sequence-relative BigInt
+          endTicks:   BigInt(word.endTime)   + clipStartTicks,
+          confidence: word.confidence ?? 1.0,
+        });
+      }
+    }
+  }
+  return results; // flat array — sort by startTicks if needed
+}
 ```
 
-**This is the correct input for our plugin — use native transcript, not SRT parsing.**
+### Check which clips have no transcript
+
+```js
+async function checkTranscriptsExist(sequence) {
+  const ppro = require('premierepro');
+  const missing = [];
+  const track = (await sequence.getVideoTracks())[0];
+  for (const clip of await track.getClips()) {
+    const clipPI = ppro.ClipProjectItem.cast(await clip.getProjectItem());
+    if (!clipPI) { missing.push(await clip.name); continue; }
+    try {
+      const json = await ppro.Transcript.exportToJSON(clipPI);
+      if (!json) missing.push(await clip.name);
+    } catch (e) {
+      missing.push(await clip.name);
+    }
+  }
+  return missing; // [] = all good, non-empty = show "please transcribe" message
+}
+```
+
+### Transcript JSON shape (from exportToJSON)
+
+```json
+{
+  "segments": [
+    {
+      "words": [
+        { "word": "Hello", "startTime": 1270080000, "endTime": 2540160000, "confidence": 0.98 }
+      ]
+    }
+  ]
+}
+```
+
+`startTime` / `endTime` in the JSON are source-clip-relative tick counts (plain numbers, not BigInt).  
+Convert to BigInt with `BigInt(word.startTime)` before doing arithmetic with `clipStartTicks`.
 
 ---
 

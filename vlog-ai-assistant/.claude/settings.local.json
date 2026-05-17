@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(\\(Get-Content \"c:\\\\Users\\\\Robel\\\\Desktop\\\\AI PLUGIN\\\\vlog-ai-assistant\\\\js\\\\core\\\\timeline-editor.js\"\\).Count)"
+    ]
+  }
+}

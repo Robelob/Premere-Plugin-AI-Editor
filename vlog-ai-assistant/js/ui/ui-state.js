@@ -1,5 +1,51 @@
 ﻿/* ui-state.js - UI state management */
 
+// DOM config for each named state in CONSTANTS.STATES
+const _STATE_CONFIG = {
+    ready: {
+        pillClass:   'status-ready',
+        label:       'READY',
+        isLoading:   false,
+        analyzeEnabled: true,
+        commitEnabled:  false,
+    },
+    analyzing: {
+        pillClass:   'status-busy',
+        label:       'ANALYZING',
+        isLoading:   true,
+        analyzeEnabled: false,
+        commitEnabled:  false,
+    },
+    markers_placed: {
+        pillClass:   'status-review',
+        label:       'REVIEW',
+        isLoading:   false,
+        analyzeEnabled: true,
+        commitEnabled:  true,   // ← Commit becomes available after Analyze
+    },
+    committing: {
+        pillClass:   'status-busy',
+        label:       'COMMITTING',
+        isLoading:   true,
+        analyzeEnabled: false,
+        commitEnabled:  false,
+    },
+    committed: {
+        pillClass:   'status-done',
+        label:       'DONE',
+        isLoading:   false,
+        analyzeEnabled: true,
+        commitEnabled:  false,
+    },
+    error: {
+        pillClass:   'status-error',
+        label:       'ERROR',
+        isLoading:   false,
+        analyzeEnabled: true,
+        commitEnabled:  false,
+    },
+};
+
 const UIState = {
     // Current state
     state: {
@@ -100,10 +146,60 @@ const UIState = {
      */
     reset() {
         this.state.results = null;
-        this.state.error = null;
-        this.state.status = 'ready';
+        this.state.error   = null;
+        this.state.status  = 'ready';
         this.state.statusMessage = 'Ready';
-        this.state.isLoading = false;
+        this.state.isLoading     = false;
+        this._applyToDom('ready');
+    },
+
+    /**
+     * Drive the two-step state machine.
+     * Accepts any value from CONSTANTS.STATES and updates the DOM immediately.
+     * Called by TimelineEditor and UIController.
+     */
+    set(stateName) {
+        const cfg = _STATE_CONFIG[stateName];
+        if (!cfg) {
+            Logger.warn('UIState.set: unknown state "' + stateName + '"');
+            return;
+        }
+        this.state.status      = stateName;
+        this.state.statusMessage = cfg.label;
+        this.state.isLoading   = cfg.isLoading;
+        Logger.info('UIState → ' + stateName);
+        this._applyToDom(stateName);
+    },
+
+    /**
+     * Update DOM elements to reflect the new state.
+     * Uses getElementById with null-guards so it's safe to call before
+     * ui-controller wires up all elements.
+     */
+    _applyToDom(stateName) {
+        const cfg = _STATE_CONFIG[stateName] || _STATE_CONFIG.ready;
+
+        // Status pill
+        var pill = document.getElementById('statusIndicator');
+        if (pill) {
+            // Swap out any existing status-* class
+            pill.className = pill.className.replace(/\bstatus-\S+/g, '').trim();
+            pill.classList.add('status-pill', cfg.pillClass);
+        }
+        var pillText = document.getElementById('statusText');
+        if (pillText) pillText.textContent = cfg.label;
+
+        // Loading overlay
+        var overlay = document.getElementById('loadingIndicator');
+        if (overlay) overlay.style.display = cfg.isLoading ? 'flex' : 'none';
+
+        // Analyze button (always present in HTML)
+        var analyzeBtn = document.getElementById('analyzeBtn');
+        if (analyzeBtn) analyzeBtn.disabled = !cfg.analyzeEnabled;
+
+        // Commit button (added by UIController — may not exist yet)
+        var commitBtn = document.getElementById('commitEditsBtn');
+        if (commitBtn) commitBtn.disabled = !cfg.commitEnabled;
     },
 };
 

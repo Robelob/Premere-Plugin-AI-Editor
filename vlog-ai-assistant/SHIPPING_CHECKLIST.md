@@ -1,75 +1,134 @@
 # Shipping Checklist
-> **For Claude:** Use this to know what "done" looks like for each coding session.
-> Check items off as they're completed. Never ship a session without verifying the relevant items.
+> **For Claude Code:** Start each session by finding the first unchecked item and completing it.
+> Check items off as you go. Never leave a session with broken code.
 
 ---
 
-## Phase 1 — Foundation (do this first, in order)
+## Phase 1 — Foundation (do first, in order)
 
-- [ ] **constants.js** — Add `TICKS_PER_SECOND`, `PADDING_SECONDS`, `MIN_SILENCE_SECONDS`, `MIN_CONFIDENCE`, `STATES`, `BRIDGE_TIMEOUT_MS`, `BRIDGE_POLL_MS`
-- [ ] **cep-bridge.js** (NEW file) — UXP side of IPC: `sendCommand()`, `ping()`, `razorAndDelete()`, `_writeTempFile()`, `_pollForResponse()`, `_getTmpDir()`
-- [ ] **premiere-api.js** — Add `timeToTicks()`, `ticksToSeconds()`, `getSequenceEditor()`, `addSilenceMarker()`, `addBrollMarker()`, updated `addSequenceMarker()` with color support
-- [ ] **prompt-templates.js** — Rewrite `getSystemInstruction()` (story-first), add `getTimelineAnalysisPrompt(transcriptData)`, keep old methods for now
-- [ ] **response-parser.js** — Add `parseEditPlan()` with confidence + duration filtering
-- [ ] **timeline-editor.js** — Full rewrite: `analyzeAndMark()`, `commitEdits()`, `_applyPadding()`, `_sortReverse()`
-- [ ] **ui-state.js** — Add new states: `MARKERS_PLACED`, `COMMITTING`, `COMMITTED`
-- [ ] **ui-controller.js** — Wire up two-step button flow, store `_pendingEditPlan`, disable/enable Commit button
+- [ ] **constants.js** — add `TICKS_PER_SECOND`, `PADDING_SECONDS`, `MIN_SILENCE_SECONDS`,
+  `MIN_CONFIDENCE`, `WHISPER_PROVIDER`, `WHISPER_API_KEY`, `AI_PROVIDER`, `AI_MODEL`,
+  `OLLAMA_MODEL`, `OLLAMA_BASE_URL`, `STATES`, `BRIDGE_TIMEOUT_MS`
 
-## Phase 2 — CEP Bridge
+- [ ] **cep-bridge.js** (NEW) — `sendCommand()`, `ping()`, `razorAndDelete()`,
+  `_writeTempFile()`, `_pollForResponse()`, `_getTmpDir()`
 
-- [ ] **cep-bridge/CSXS/manifest.xml** — Hidden panel manifest, CEP 11, PPRO host
-- [ ] **cep-bridge/index.html** — Minimal HTML loader
-- [ ] **cep-bridge/js/main.js** — 200ms polling loop, calls `ambar_processPendingCommands`
-- [ ] **cep-bridge/jsx/host.jsx** — All ExtendScript: `ambar_razorAtTime()`, `ambar_rippleDeleteRange()`, `ambar_applyAudioCrossfade()`, `ambar_processPendingCommands()`, `ambar_getTmpDir()`
-- [ ] **CSInterface.js** — Copy from `Adobe-CEP/CEP-Resources` repo (v11)
+- [ ] **premiere-api.js** — add `timeToTicks()`, `ticksToSeconds()`,
+  `getSequenceEditor()`, `getClipSourcePath()`, `addSilenceMarker()`, `addBrollMarker()`
 
-## Phase 3 — Cleanup
+- [ ] **ui-state.js** — add `MARKERS_PLACED`, `COMMITTING`, `COMMITTED` states
+
+## Phase 2 — Three-Layer Audio Pipeline (do in order)
+
+- [ ] **audio-analyzer.js** (NEW FILE) — Layer 1
+  - `findSilences(sourceFilePath, clipStartTicks, clipInPointTicks)`
+  - `_readAsPCM(filePath)` — uses `AudioContext.decodeAudioData()`
+  - `_detectSilenceRanges(pcm)` — RMS energy per 10ms frame, -40dB threshold
+  - `_invertToSpeech(silenceRanges, totalDurationMs)` — returns speech segments
+  - `_applyPadding(ranges)` — 150ms buffer each side
+  - `_toSequenceTicks(ranges, clipStartTicks, clipInPointTicks)`
+
+- [ ] **whisper-service.js** (NEW FILE) — Layer 2
+  - `transcribeSegments(segments, pcm, provider, apiKey)`
+  - `_whisperAPI(wavBlob, url, model, apiKey)` — generic Whisper endpoint caller
+  - `_pcmToWavBlob(samples, sampleRate)` — pure JS WAV encoder, no dependencies
+
+- [ ] **prompt-templates.js** — add `getEditorialAnalysisPrompt(blocks, silences)`
+  Replace old FCPXML/SRT prompts. Keep `getSystemInstruction()`.
+
+- [ ] **response-parser.js** — add `parseEditPlan(responseText)`
+  Handles new schema: `{ confirmedCuts, retakes, broll, summary }`
+  Filters by `MIN_CONFIDENCE`. Returns null on parse failure.
+
+- [ ] **timeline-editor.js** — full rewrite of `analyzeSequence()`
+  - Call `AudioAnalyzer.findSilences()` → Layer 1
+  - Call `WhisperService.transcribeSegments()` → Layer 2
+  - Build paragraph blocks from words
+  - Call `AIService.sendPrompt()` → Layer 3
+  - Call `ResponseParser.parseEditPlan()`
+  - Call `_placeMarkers()` (no cuts)
+  - Keep existing `commitEdits()` and `_applyPadding()`
+
+- [ ] **ui-controller.js** — wire two-step flow
+  - Analyze button → `TimelineEditor.analyzeSequence()` → store `_pendingEditPlan`
+  - Commit button → `TimelineEditor.commitEdits(_pendingEditPlan)` → enable after markers placed
+  - Show progress during each layer (Layer 1 / 2 / 3 status in UI)
+
+## Phase 3 — CEP Bridge
+
+- [ ] **cep-bridge/CSXS/manifest.xml** — hidden panel, CEP 11, PPRO host
+- [ ] **cep-bridge/index.html** — minimal HTML loader
+- [ ] **cep-bridge/js/main.js** — 200ms polling loop
+- [ ] **cep-bridge/jsx/host.jsx** — `ambar_razorAtTime()`, `ambar_rippleDeleteRange()`,
+  `ambar_applyAudioCrossfade()`, `ambar_processPendingCommands()`, `ambar_getTmpDir()`
+- [ ] **CSInterface.js** — copy from Adobe-CEP/CEP-Resources repo (v11)
+
+## Phase 4 — Cleanup
 
 - [ ] Delete `js/core/fcpxml-editor.js`
 - [ ] Delete `js/core/srt-parser.js`
 - [ ] Delete `js/core/xml-parser.js`
 - [ ] Delete `js/utils/xml-shim.js`
 - [ ] Remove deleted file `<script>` tags from `index.html`
-- [ ] Add `cep-bridge.js` script tag to `index.html` (before `premiere-api.js`)
-- [ ] Update `STRUCTURE.md` to reflect new file layout
+- [ ] Add new file `<script>` tags in correct order (see CLAUDE.md)
 
-## Phase 4 — Testing Gates
+## Phase 5 — Testing Gates
 
-Before calling any phase "done", verify:
+**Phase 1+2 gate — run in UXP DevTools console:**
+```js
+// Confirm constants loaded
+console.log(CONSTANTS.TICKS_PER_SECOND === 254016000000); // true
+console.log(CONSTANTS.WHISPER_PROVIDER);                   // 'groq'
 
-**Phase 1 gate:**
-- [ ] `CONSTANTS.TICKS_PER_SECOND === 254016000000` (check in browser console of UXP panel)
-- [ ] `ResponseParser.parseEditPlan()` correctly filters low-confidence segments
-- [ ] `TimelineEditor.analyzeAndMark()` places red markers on the timeline ruler
-- [ ] Commit button is disabled before Analyze runs
-- [ ] Commit button enables after Analyze places markers
+// Confirm AudioAnalyzer exists
+console.log(typeof AudioAnalyzer.findSilences);            // 'function'
 
-**Phase 2 gate:**
-- [ ] CEP bridge panel appears in Premiere (`Window > Extensions > Ambar Bridge`)
-- [ ] `CEPBridge.ping()` returns `{ success: true, message: 'bridge alive' }` within 2 seconds
-- [ ] `CEPBridge.razorAndDelete([{startSeconds: 5, endSeconds: 7}])` creates visible cuts on a test clip
-- [ ] Cuts happen in reverse order (verify by checking which cut appears in undo history first)
-- [ ] Audio crossfade appears on the resulting edit point
+// Confirm WhisperService exists
+console.log(typeof WhisperService.transcribeSegments);     // 'function'
+```
 
-**Full integration gate:**
-- [ ] Record a 3-minute continuous talking-head clip
-- [ ] Import into Premiere, drop on timeline
-- [ ] Run Analyze → markers appear on silence gaps
-- [ ] Run Commit → clips cut at marked positions
-- [ ] Result has < 20 cuts total (not word-level barcode)
-- [ ] No audible audio pops on playback
-- [ ] Undo (Ctrl+Z) cleanly removes all cuts
+**Phase 2 gate — real footage test:**
+- Open a sequence with a single continuous clip
+- Click Analyze
+- Layer 1 log appears: "[AudioAnalyzer] Found X silence ranges"
+- Layer 2 log appears: "[WhisperService] ..."
+- Layer 3 log appears: "Layer 3 done: X cuts confirmed"
+- Red markers appear on timeline ruler
+- Commit button enables
+
+**Phase 3 gate — CEP bridge:**
+- `CEPBridge.ping()` returns `{ success: true }` within 2 seconds
+- `CEPBridge.razorAndDelete([{startSeconds:5, endSeconds:7}])` cuts a test clip
+- Cuts happen end → start (verify in undo history)
+
+**Full integration gate — 3-minute vlog clip:**
+- ≤ 20 total cuts produced (not word-level barcode)
+- No audible audio pops on playback
+- One Ctrl+Z undoes all commits (or sequential Ctrl+Z works cleanly)
+
+---
+
+## Common Mistakes (Claude Code must avoid these)
+
+1. Uploading full video files — Layer 2 receives WAV blobs of speech segments only
+2. Using ticks as Numbers — always BigInt arithmetic for ticks
+3. Forgetting `app.enableQE()` before QE DOM in host.jsx
+4. ES6 syntax in host.jsx — ES3 only (`var`, no arrows, no template literals)
+5. Processing segments forward — always reverse order (end → start)
+6. Not returning `true` from `executeTransaction` callback — silent rollback
+7. Trying to use Ollama for audio — it's text-only, use Groq for Whisper
+8. Missing `await` on Premiere UXP proxy properties
 
 ---
 
 ## File Size Budget
 
-Keep files focused. If a file exceeds these sizes, it needs to be split:
-
 | File | Max lines |
 |---|---|
+| `audio-analyzer.js` | 200 |
+| `whisper-service.js` | 150 |
 | `premiere-api.js` | 400 |
-| `timeline-editor.js` | 300 |
+| `timeline-editor.js` | 350 |
 | `cep-bridge.js` | 200 |
 | `host.jsx` | 400 |
 | `ui-controller.js` | 600 |
@@ -78,37 +137,13 @@ Keep files focused. If a file exceeds these sizes, it needs to be split:
 
 ---
 
-## Common Mistakes to Avoid
+## Graceful Degradation Requirements
 
-1. **Forgetting `app.enableQE()` before any `qe.*` call** — QE state resets between evalScript calls
-2. **Using seconds instead of ticks for UXP timeline math** — always ticks
-3. **Using ES6+ syntax in host.jsx** — ExtendScript is ES3, will silently fail or throw
-4. **Processing segments forward instead of reverse** — breaks timing of all subsequent cuts
-5. **Not awaiting UXP proxy properties** — `sequence.name` not `await sequence.name` returns a Promise object, not the string
-6. **Forgetting `return true` in executeTransaction callback** — without it, the transaction rolls back silently
-7. **Writing to the wrong temp dir** — UXP and CEP must agree on the same path
-8. **Not handling bridge ping failure gracefully** — if CEP bridge isn't installed, plugin should still work (markers only, no commits)
-
----
-
-## Graceful Degradation
-
-The plugin must work even if the CEP bridge is not installed. If `CEPBridge.ping()` fails:
-
-- **Analyze** still works (UXP markers)
-- **Commit** shows a message: "CEP Bridge not found. Please ensure the bridge panel is installed. See README for instructions."
-- The Commit button is disabled (or shows a warning icon)
-- Users can still use the markers as a manual cutting guide
-
-Never crash or show a blank panel if CEP is missing.
-
----
-
-## README Requirements (before first public release)
-
-- [ ] Installation steps for BOTH the UXP plugin AND the CEP bridge
-- [ ] How to enable CEP debug mode (registry key / defaults write)
-- [ ] How to add an AI API key
-- [ ] Supported Premiere versions (25.x Beta for UXP, 22.0+ for CEP)
-- [ ] Known limitations (no trim of partial clips at segment edges)
-- [ ] How to undo all edits (single Ctrl+Z per commit transaction)
+| Missing component | Plugin behaviour |
+|---|---|
+| CEP bridge not installed | Analyze works, Commit shows install instructions |
+| Ollama not running | Falls back to Groq for Layer 3 |
+| Groq key missing | Shows "Add API key in settings" message |
+| AudioContext unavailable | Shows "TODO: CEP audio export fallback needed" warning |
+| No clips on timeline | Shows "Open a sequence with clips first" |
+| Clip has no source file | Shows clip name + "source file not found" |

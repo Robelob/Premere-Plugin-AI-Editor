@@ -39,7 +39,14 @@ const AIService = {
         return defaults[this.provider] || 'llama3.2';
     },
 
-    _model() { return this.model || this._defaultModel(); },
+    _model() {
+        var m = this.model || '';
+        if (!m) return this._defaultModel();
+        // Reject model names that clearly belong to a different provider (cross-contamination from localStorage)
+        if (this.provider === 'gemini'    && !m.startsWith('gemini-'))  return this._defaultModel();
+        if (this.provider === 'anthropic' && !m.startsWith('claude-'))  return this._defaultModel();
+        return m;
+    },
 
     _baseUrl() {
         if (this.provider === 'openai')  return 'https://api.openai.com/v1';
@@ -160,6 +167,131 @@ const AIService = {
         }
     },
 
+    // ── Audio transcription (Approach B from TRANSCRIPT_GUIDE) ───────────────
+
+    // Send an audio/video file to the configured AI for word-level transcription.
+    // Returns { success, words: [{ word, startTime, endTime, confidence }] }
+    // or      { success: false, error, sizeMB? (if FILE_TOO_LARGE) }
+    async sendAudioFile(filePath) {
+        var p = this.provider;
+        if (p === 'gemini')   return await this._transcribeWithGemini(filePath);
+        if (p === 'openai' || p === 'openai-compatible') return await this._transcribeWithWhisperAPI(filePath);
+        return { success: false, error: 'Audio transcription requires Gemini or an OpenAI-compatible provider (e.g. Groq). Current provider: ' + p };
+    },
+
+    // Groq / OpenAI Whisper via multipart form upload
+    async _transcribeWithWhisperAPI(filePath) {
+        var uxp = require('uxp');
+        var fs  = uxp.storage.localFileSystem;
+        var url = 'file:///' + filePath.replace(/\\/g, '/');
+
+        var buffer;
+        try {
+            var entry = await fs.getEntryWithUrl(url);
+            buffer = await entry.read({ format: uxp.storage.formats.binary });
+        } catch (e) {
+            return { success: false, error: 'Could not read file: ' + e.message };
+        }
+
+        var MAX_BYTES = 25 * 1024 * 1024; // 25MB Groq/OpenAI limit
+        if (buffer.byteLength > MAX_BYTES) {
+            return { success: false, error: 'FILE_TOO_LARGE', sizeMB: Math.round(buffer.byteLength / 1024 / 1024) };
+        }
+
+        var filename = filePath.split(/[\\/]/).pop();
+        var ext      = filename.split('.').pop().toLowerCase();
+        var mimeTypes = {
+            'mp4': 'video/mp4', 'mov': 'video/quicktime', 'avi': 'video/avi',
+            'mp3': 'audio/mpeg', 'wav': 'audio/wav', 'm4a': 'audio/mp4',
+            'aac': 'audio/aac', 'mxf': 'video/mxf', 'webm': 'video/webm',
+        };
+        var mimeType = mimeTypes[ext] || 'video/mp4';
+
+        var blob     = new Blob([buffer], { type: mimeType });
+        var formData = new FormData();
+        formData.append('file',    blob, filename);
+        formData.append('model',   this.model || 'whisper-large-v3-turbo');
+        formData.append('response_format', 'verbose_json');
+        formData.append('timestamp_granularities[]', 'word');
+
+        try {
+            var res = await fetch(this._baseUrl() + '/audio/transcriptions', {
+                method:  'POST',
+                headers: { 'Authorization': 'Bearer ' + this.apiKey },
+                body:    formData,
+            });
+            if (!res.ok) {
+                var errText = await res.text();
+                return { success: false, error: 'Whisper API ' + res.status + ': ' + errText };
+            }
+            var data = await res.json();
+            // Groq/Whisper returns { words: [{ word, start, end }] }
+            var words = (data.words || []).map(function(w) {
+                return { word: w.word, startTime: w.start, endTime: w.end, confidence: 1.0 };
+            });
+            if (!words.length) return { success: false, error: 'No words returned — does the file have audio?' };
+            return { success: true, words: words, duration: data.duration };
+        } catch (e) {
+            return { success: false, error: 'Transcription request failed: ' + e.message };
+        }
+    },
+
+    // Gemini inline audio (base64-encoded, 20MB limit)
+    async _transcribeWithGemini(filePath) {
+        var uxp = require('uxp');
+        var fs  = uxp.storage.localFileSystem;
+        var url = 'file:///' + filePath.replace(/\\/g, '/');
+
+        var buffer;
+        try {
+            var entry = await fs.getEntryWithUrl(url);
+            buffer = await entry.read({ format: uxp.storage.formats.binary });
+        } catch (e) {
+            return { success: false, error: 'Could not read file: ' + e.message };
+        }
+
+        var MAX_BYTES = 20 * 1024 * 1024; // 20MB Gemini inline limit
+        if (buffer.byteLength > MAX_BYTES) {
+            return { success: false, error: 'FILE_TOO_LARGE', sizeMB: Math.round(buffer.byteLength / 1024 / 1024) };
+        }
+
+        var uint8 = new Uint8Array(buffer);
+        var binary = '';
+        var CHUNK = 8192;
+        for (var i = 0; i < uint8.length; i += CHUNK) {
+            binary += String.fromCharCode.apply(null, uint8.subarray(i, i + CHUNK));
+        }
+        var base64Audio = btoa(binary);
+
+        var ext = filePath.split('.').pop().toLowerCase();
+        var mimeMap = { 'mp4': 'video/mp4', 'mov': 'video/quicktime', 'mp3': 'audio/mpeg', 'wav': 'audio/wav', 'm4a': 'audio/mp4', 'mxf': 'video/mxf' };
+        var mimeType = mimeMap[ext] || 'video/mp4';
+
+        var systemPrompt = 'You are a precise audio transcription engine. Return ONLY JSON: {"words":[{"word":"Hello","startTime":0.000,"endTime":0.320},...],"duration":120.5}. No markdown.';
+        var apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + this.apiKey;
+
+        try {
+            var res = await fetch(apiUrl, {
+                method:  'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    contents: [{ parts: [
+                        { text: systemPrompt },
+                        { inline_data: { mime_type: mimeType, data: base64Audio } },
+                    ]}],
+                    generationConfig: { temperature: 0, response_mime_type: 'application/json' },
+                }),
+            });
+            var data = await res.json();
+            var text = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text;
+            if (!text) return { success: false, error: 'Empty response from Gemini audio' };
+            var parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
+            return { success: true, words: parsed.words, duration: parsed.duration };
+        } catch (e) {
+            return { success: false, error: 'Gemini audio error: ' + e.message };
+        }
+    },
+
     // ── Analysis methods (called by UIController) ─────────────────────
 
     async analyzeSequence(summary) {
@@ -192,6 +324,57 @@ const AIService = {
             PromptTemplates.getSystemInstruction(),
             PromptTemplates.getCaptionGenerationPrompt(projectMetadata)
         );
+    },
+
+    // ── Two-pass clip classifier (Pass 2) ─────────────────────────────
+    // Takes descriptions produced by VisionService.describeFrame() for all clips
+    // and classifies them in ONE text LLM call — much faster than N vision calls.
+    //
+    // descriptions: [{ filename, description }, ...]
+    // Returns:      [{ filename, category, confidence }, ...]
+    async classifyAllClips(descriptions) {
+        const clipList = descriptions
+            .map(function(d, i) {
+                return '[' + (i + 1) + '] filename: "' + d.filename + '" — "' + d.description + '"';
+            })
+            .join('\n');
+
+        const prompt =
+            'Classify these video clips. Pick exactly one category per clip.\n' +
+            'Use both the visual description AND the filename as clues.\n' +
+            'Filenames starting with "DJI_" are typically drone/aerial shots.\n' +
+            'Filenames starting with "ZVE" are Sony camera clips (could be any type).\n' +
+            'If a description says "description failed" or "frame extraction failed", classify by filename only.\n\n' +
+            'Categories (definitions):\n' +
+            '  talking-head    — person speaking directly to camera, face visible in frame\n' +
+            '  aerial-drone    — shot from above / bird\'s eye / high-altitude drone perspective\n' +
+            '  indoor-broll    — interior spaces: temples, markets, caves, restaurants, hotels\n' +
+            '  outdoor-broll   — street level, parks, buildings from outside, crowds\n' +
+            '  landscape       — wide nature shots: sea, mountains, sky, forest, coastline\n' +
+            '  product-closeup — object or product fills frame, macro or detail shot\n' +
+            '  screen-recording — computer/phone screen with UI visible\n' +
+            '  other           — anything that does not fit the above\n\n' +
+            'Clips to classify:\n' + clipList + '\n\n' +
+            'Return ONLY valid JSON — no markdown, no explanation:\n' +
+            '{"classifications":[{"filename":"...","category":"...","confidence":0.0}]}';
+
+        Logger.info('[AIService] classifyAllClips: ' + descriptions.length + ' clip(s) via ' + this.provider + '/' + this._model());
+        try {
+            const response = await this.sendPrompt(
+                'You are a video clip classifier. Return only valid JSON, no explanation.',
+                prompt
+            );
+            const clean  = (response.text || '').replace(/```json|```/g, '').trim();
+            const parsed = JSON.parse(clean);
+            if (!Array.isArray(parsed.classifications)) throw new Error('no classifications array');
+            Logger.info('[AIService] classifyAllClips: parsed ' + parsed.classifications.length + ' result(s)');
+            return parsed.classifications;
+        } catch (e) {
+            Logger.error('[AIService] classifyAllClips parse failed: ' + e.message);
+            return descriptions.map(function(d) {
+                return { filename: d.filename, category: 'other', confidence: 0 };
+            });
+        }
     },
 };
 

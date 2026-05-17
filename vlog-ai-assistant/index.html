@@ -6,6 +6,9 @@
     <link rel="stylesheet" href="css/variables.css" />
     <link rel="stylesheet" href="css/main.css" />
     <link rel="stylesheet" href="css/components.css" />
+    <style>
+        @keyframes ambar-fadein { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:translateY(0); } }
+    </style>
 </head>
 <body>
 <div class="panel">
@@ -78,6 +81,29 @@
                 </div>
             </div>
 
+            <!-- Audio file override (shown when auto-transcription fails due to file size) -->
+            <div class="drop-zone-wrap" id="audioOverrideSection" style="display:none">
+                <div class="section-label" style="display:flex;align-items:center;gap:6px;">
+                    Audio File
+                    <span style="font-size:10px;color:#b34a00;background:#2d1a00;padding:1px 6px;border-radius:3px;">LARGE FILE DETECTED</span>
+                </div>
+                <div style="font-size:11px;color:#4e5770;margin-bottom:6px;line-height:1.4;">
+                    Your video is too large for auto-transcription (&gt;25 MB limit).<br>
+                    Extract audio only with HandBrake, VLC, or ffmpeg, then select it here.
+                </div>
+                <div class="drop-zone" id="audioFileZone"
+                     style="padding:12px;"
+                     onclick="UIController.openAudioPicker()"
+                     ondragover="event.preventDefault(); event.stopPropagation(); this.classList.add('drag-over')"
+                     ondragleave="this.classList.remove('drag-over')"
+                     ondrop="UIController.onAudioDrop(event)">
+                    <div class="drop-icon" id="audioIcon">🎵</div>
+                    <div class="drop-label" id="audioLabel">Click to browse audio/video file</div>
+                    <div class="drop-sub" id="audioSub">MP3, M4A, WAV, AAC — should be &lt;25 MB</div>
+                    <div class="drop-filename" id="audioFilename" style="display:none"></div>
+                </div>
+            </div>
+
             <!-- Sequence summary card (shown after FCPXML parsed) -->
             <div class="seq-summary" id="sequenceSummary">
                 <div class="seq-summary-title" id="sequenceName">—</div>
@@ -101,14 +127,16 @@
                 </div>
             </div>
 
-            <!-- Analyze CTA -->
+            <!-- Two-step CTA: Analyze → Commit -->
             <div style="display:flex; flex-direction:column; gap:8px;">
-                <button class="cta-btn" id="analyzeBtn" onclick="UIController.startAnalysis()" disabled>
+                <button class="cta-btn" id="analyzeBtn" onclick="UIController.startTimelineAnalysis()">
                     ✦ &nbsp;Analyze with Ambar
                 </button>
-                <div class="field-hint" id="analyzeBtnHint" style="text-align:center; color:#4e5770">
-                    Load both files above to enable
-                </div>
+                <button class="cta-btn" id="commitEditsBtn" onclick="UIController.commitEdits()" disabled
+                        style="background:var(--amber,#e6a817); color:#000;">
+                    ✂ &nbsp;Commit Edits
+                </button>
+                <div class="field-hint" id="commitEditsHint" style="text-align:center; color:#4e5770; display:none"></div>
             </div>
 
         </div><!-- /panel-import -->
@@ -292,6 +320,33 @@
 
             <div class="divider"></div>
 
+            <!-- AI Tools -->
+            <div class="drop-zone-wrap">
+                <div class="section-label">AI Tools</div>
+                <button class="secondary-btn" id="organizeBinsBtn" onclick="UIController.organizeProjectBins()" style="width:100%;margin-bottom:8px">
+                    🗂 Organize Project Bins
+                </button>
+                <div class="field-hint" style="margin-bottom:4px">Classifies every clip with Ollama vision → moves into 🎙 Talking Head, 🏙 B-roll, 📦 Product, 💻 Screen Recording bins.</div>
+                <div id="organizeLog" style="display:none;max-height:200px;overflow-y:auto;font-size:11px;border-radius:4px;margin-top:6px;background:var(--surface-2,#111827);border:1px solid rgba(255,255,255,0.08)"></div>
+
+                <button class="secondary-btn" id="testFrameBtn" onclick="UIController.testFrameExtraction()" style="width:100%;margin-top:8px">
+                    🎞 Test Frame Extraction
+                </button>
+                <div class="field-hint">Verifies ffmpeg + Ollama vision on the first clip in your sequence.</div>
+                <div id="frameTestStatus" style="display:none;font-size:11px;padding:6px 8px;border-radius:4px;margin-top:4px"></div>
+
+                <button class="secondary-btn" id="suggestBrollBtn" onclick="UIController.suggestBroll()" style="width:100%;margin-top:8px">
+                    🎬 Suggest B-roll
+                </button>
+                <div class="field-hint">AI reads your transcript + project clips → suggests which B-roll to place and when. Run Analyze first.</div>
+                <button class="secondary-btn" id="placeBrollBtn" onclick="UIController.commitBroll()" style="width:100%;margin-top:4px" disabled>
+                    ✅ Place B-roll on Timeline
+                </button>
+                <div id="brollLog" style="display:none;max-height:220px;overflow-y:auto;font-size:11px;border-radius:4px;margin-top:6px;background:var(--surface-2,#111827);border:1px solid rgba(255,255,255,0.08)"></div>
+            </div>
+
+            <div class="divider"></div>
+
             <!-- Diagnostic -->
             <div class="drop-zone-wrap">
                 <div class="section-label">Diagnostic</div>
@@ -349,21 +404,25 @@
 
 </div><!-- /panel -->
 
-<!-- ── Scripts (dependency order) ── -->
-<script src="js/utils/logger.js"></script>
+<!-- ── Scripts (dependency order — do not reorder) ── -->
 <script src="js/utils/constants.js"></script>
-<script src="js/utils/validators.js"></script>
+<script src="js/utils/logger.js"></script>
 <script src="js/utils/error-handler.js"></script>
+<script src="js/utils/validators.js"></script>
+<script src="js/utils/capabilities.js"></script>
+<script src="js/core/cep-bridge.js"></script>
+<script src="js/core/audio-analyzer.js"></script>
+<script src="js/core/frame-extractor.js"></script>
 <script src="js/core/premiere-api.js"></script>
 <script src="js/core/project-reader.js"></script>
-<script src="js/core/timeline-editor.js"></script>
-<script src="js/utils/xml-shim.js"></script>
-<script src="js/core/xml-parser.js"></script>
-<script src="js/core/fcpxml-editor.js"></script>
-<script src="js/core/srt-parser.js"></script>
 <script src="js/ai/prompt-templates.js"></script>
 <script src="js/ai/response-parser.js"></script>
+<script src="js/ai/whisper-service.js"></script>
+<script src="js/ai/vision-service.js"></script>
+<script src="js/core/project-organizer.js"></script>
 <script src="js/ai/ai-service.js"></script>
+<script src="js/core/timeline-editor.js"></script>
+<script src="js/core/broll-placer.js"></script>
 <script src="js/ui/ui-state.js"></script>
 <script src="js/ui/ui-controller.js"></script>
 <script src="js/index.js"></script>

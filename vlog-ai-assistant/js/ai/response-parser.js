@@ -129,6 +129,82 @@ const ResponseParser = {
         }
     },
 
+    /**
+     * Parse an AI response into the new editPlan schema.
+     * Expected AI output shape:
+     *   { summary, segments: [{ startSeconds, endSeconds, reason, type, confidence }],
+     *     brollOpportunities: [{ atSeconds, suggestion, confidence }] }
+     *
+     * Filtering applied here (not in timeline-editor) so UI can show counts before commit:
+     *   - segments with confidence < CONSTANTS.MIN_CONFIDENCE are dropped
+     *   - segments shorter than CONSTANTS.MIN_SILENCE_SECONDS are dropped
+     *   - brollOpportunities with confidence < CONSTANTS.MIN_CONFIDENCE are dropped
+     *
+     * Returns { summary, segments, brollOpportunities } or null on hard failure.
+     */
+    parseEditPlan(apiResponse) {
+        try {
+            var text = this._extractText(apiResponse);
+            if (!text) {
+                Logger.error('parseEditPlan: no text in response');
+                return null;
+            }
+
+            var parsed = this._parseJSON(text);
+            if (!parsed) return null;
+
+            if (!Array.isArray(parsed.segments)) {
+                // Model returned JSON but no segments — treat as "nothing to cut" rather than a hard failure.
+                // This happens when the transcript is empty or the model couldn't find editable content.
+                Logger.error('parseEditPlan: missing segments array — raw: ' + text.slice(0, 300));
+                return { summary: parsed.summary || '', segments: [], brollOpportunities: [] };
+            }
+
+            var minConf     = CONSTANTS.MIN_CONFIDENCE;
+            var minDuration = CONSTANTS.MIN_SILENCE_SECONDS;
+            var validTypes  = { silence: true, retake: true, filler: true };
+
+            var segments = parsed.segments.filter(function(s) {
+                if (typeof s.startSeconds !== 'number' || typeof s.endSeconds !== 'number') return false;
+                if (typeof s.confidence !== 'number') return false;
+                if (s.confidence < minConf) {
+                    Logger.info('parseEditPlan: dropped low-confidence segment (' + s.confidence.toFixed(2) + ') at ' + s.startSeconds + 's');
+                    return false;
+                }
+                if ((s.endSeconds - s.startSeconds) < minDuration) {
+                    Logger.info('parseEditPlan: dropped short segment (' + (s.endSeconds - s.startSeconds).toFixed(2) + 's) at ' + s.startSeconds + 's');
+                    return false;
+                }
+                if (s.type && !validTypes[s.type]) {
+                    Logger.warn('parseEditPlan: unknown segment type "' + s.type + '" — keeping');
+                }
+                return true;
+            });
+
+            var brollOpportunities = [];
+            if (Array.isArray(parsed.brollOpportunities)) {
+                brollOpportunities = parsed.brollOpportunities.filter(function(b) {
+                    if (typeof b.atSeconds !== 'number' || !b.suggestion) return false;
+                    if (typeof b.confidence === 'number' && b.confidence < minConf) {
+                        Logger.info('parseEditPlan: dropped low-confidence B-roll at ' + b.atSeconds + 's');
+                        return false;
+                    }
+                    return true;
+                });
+            }
+
+            Logger.info('parseEditPlan: ' + segments.length + ' segments, ' + brollOpportunities.length + ' B-roll opportunities');
+            return {
+                summary:            parsed.summary || '',
+                segments:           segments,
+                brollOpportunities: brollOpportunities,
+            };
+        } catch (e) {
+            Logger.error('parseEditPlan failed: ' + e.message);
+            return null;
+        }
+    },
+
     getErrorMessage(apiResponse) {
         if (apiResponse && apiResponse.error) return apiResponse.error.message || 'Unknown API error';
         if (!apiResponse) return 'No response received';

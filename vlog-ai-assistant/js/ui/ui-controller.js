@@ -2,16 +2,32 @@
 
 const UIController = {
 
-    _pollInterval: null,
+    _pollInterval:    null,
+    _pendingEditPlan: null,   // holds parseEditPlan() result between Analyze and Commit steps
 
     init() {
         Logger.info('Initializing UI Controller');
+        
+        // Log startup diagnostics to show what APIs are available
+        if (typeof Capabilities !== 'undefined') {
+            Capabilities.detectSync();
+            Capabilities.logDiagnostics();
+            // Detect CEP Bridge availability asynchronously (non-blocking)
+            Capabilities.detectCEPBridge().then(function() {
+                Logger.info('[Capabilities] CEP Bridge detection complete');
+            }).catch(function(e) {
+                Logger.debug('[Capabilities] CEP Bridge detection error: ' + e.message);
+            });
+        }
+        
         this.restoreSettings();
+        this._initAIService();
         this._updateProviderUI(this._getProvider());
         this.updateStatus('ready', 'READY');
         this._initRangeDisplays();
         this._setupEventBasedDetection();
         this.refreshSequences();
+        this._checkReadyToAnalyze();
         this._startSequencePoll();
     },
 
@@ -45,6 +61,7 @@ const UIController = {
             } catch (_) {}
 
             self.refreshSequences();
+            self._checkReadyToAnalyze();
             self.updateStatus('ready', 'READY · ' + (seqName || 'Sequence detected'));
         });
         if (ok) Logger.info('Event-based sequence detection armed');
@@ -213,11 +230,19 @@ const UIController = {
     // ── Provider / model / API key ────────────────────────────────────
 
     _getProvider() {
+        // CONSTANTS is primary source of truth; UI/localStorage are secondary
+        if (CONSTANTS.AI_PROVIDER && CONSTANTS.AI_PROVIDER !== '') {
+            return CONSTANTS.AI_PROVIDER;
+        }
         const el = document.getElementById('aiProvider');
         return (el ? el.value : '') || UIState.getSettings().aiProvider || 'ollama';
     },
 
     _getModel() {
+        // CONSTANTS is primary source of truth; UI/localStorage are secondary
+        if (CONSTANTS.AI_MODEL && CONSTANTS.AI_MODEL !== '') {
+            return CONSTANTS.AI_MODEL;
+        }
         const el = document.getElementById('aiModel');
         return (el ? el.value.trim() : '') || UIState.getSettings().aiModel || '';
     },
@@ -277,6 +302,47 @@ const UIController = {
         } catch (e) {
             self.showError('Could not open file: ' + e.message);
         }
+    },
+
+    openAudioPicker: async function() {
+        var self = this;
+        try {
+            var types = ['mp3', 'm4a', 'wav', 'aac', 'mp4', 'mov', 'mxf', 'webm'];
+            var result = await this._openFilePicker(types, true); // binaryMode = path only
+            if (result) self._processAudioFile(result.name, result.nativePath || result.path || result.name);
+        } catch (e) {
+            self.showError('Could not open file: ' + e.message);
+        }
+    },
+
+    onAudioDrop: async function(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        var zone = document.getElementById('audioFileZone');
+        if (zone) zone.classList.remove('drag-over');
+        var file = this._getDroppedFile(event);
+        if (!file) { this.showError('No file received — try using the file picker instead.'); return; }
+        // Use nativePath if available (UXP), otherwise name
+        this._processAudioFile(file.name, file.nativePath || file.path || null);
+    },
+
+    _processAudioFile: function(name, nativePath) {
+        var zone     = document.getElementById('audioFileZone');
+        var label    = document.getElementById('audioLabel');
+        var sub      = document.getElementById('audioSub');
+        var filename = document.getElementById('audioFilename');
+        var icon     = document.getElementById('audioIcon');
+
+        UIState.setState('audioFilePath', nativePath || name);
+
+        if (zone)     { zone.classList.add('loaded'); }
+        if (icon)     { icon.textContent = '✅'; }
+        if (label)    { label.textContent = name; }
+        if (sub)      { sub.style.display = 'none'; }
+        if (filename) { filename.textContent = nativePath || name; filename.style.display = 'block'; }
+
+        Logger.info('Audio override selected: ' + (nativePath || name));
+        this._checkReadyToAnalyze();
     },
 
     openSrtPicker: async function() {
@@ -386,19 +452,23 @@ const UIController = {
         var icon     = document.getElementById('srtIcon');
 
         try {
-            var lines = SRTParser.parse(content);
-            if (lines.length === 0) {
+            var parsed = PromptTemplates.parseSrtToTranscript(content);
+            if (!parsed || !parsed.words || parsed.words.length === 0) {
                 throw new Error('No subtitle entries found — is this a valid SRT file?');
             }
+            // Store in the new format for timeline analysis
+            UIState.setState('srtTranscript', parsed);
+            // Keep legacy key so old code paths don't break
+            var lines = parsed.words;
             UIState.setState('srtParsed', lines);
 
             if (zone)     { zone.classList.add('loaded'); }
             if (icon)     { icon.textContent = '✅'; }
-            if (label)    { label.textContent = lines.length + ' subtitle lines loaded'; }
+            if (label)    { label.textContent = lines.length + ' transcript entries loaded'; }
             if (sub)      { sub.style.display = 'none'; }
             if (filename) { filename.textContent = name; filename.style.display = 'block'; }
 
-            Logger.info('SRT: ' + lines.length + ' entries');
+            Logger.info('SRT: ' + lines.length + ' entries loaded for timeline analysis');
             self._updateSummaryCard();
             self._checkReadyToAnalyze();
 
@@ -417,7 +487,7 @@ const UIController = {
     // Opens native OS file picker.
     // In UXP (Premiere): uses require('uxp').storage.localFileSystem
     // In browser (dev):  falls back to programmatic <input type="file">
-    _openFilePicker: function(types) {
+    _openFilePicker: function(types, binaryMode) {
         var self = this;
 
         // ── UXP path ──────────────────────────────────────────────────
@@ -430,11 +500,15 @@ const UIController = {
                     return lfs.getFileForOpening({ allowMultiple: false, types: types })
                         .then(function(file) {
                             if (!file) return null; // user cancelled
+                            // For binary mode (audio/video), return native path only — do not read content
+                            if (binaryMode) {
+                                return { name: file.name, nativePath: file.nativePath || null, path: file.nativePath || null };
+                            }
                             var fmt = storage.formats && storage.formats.utf8
                                       ? { format: storage.formats.utf8 }
                                       : {};
                             return file.read(fmt).then(function(content) {
-                                return { name: file.name, content: String(content) };
+                                return { name: file.name, content: String(content), nativePath: file.nativePath || null };
                             });
                         });
                 }
@@ -557,26 +631,25 @@ const UIController = {
     },
 
     _checkReadyToAnalyze: function() {
-        var fcpxml = UIState.getState('fcpxmlParsed');
-        // SRT is optional if FCPXML has embedded captions
-        var srt    = UIState.getState('srtParsed');
-        var parsed = UIState.getState('fcpxmlParsed');
-        var hasCaptions = parsed && parsed.captions && parsed.captions.length > 0;
-        var ready  = !!(fcpxml && (srt || hasCaptions));
+        var srt         = UIState.getState('srtParsed');
+        var fcpxml      = UIState.getState('fcpxmlParsed');
+        var hasCaptions = fcpxml && fcpxml.captions && fcpxml.captions.length > 0;
+        var hasSequence = !!PremiereAPI.getActiveSequence();
+
+        // New primary workflow (startTimelineAnalysis): active sequence OR SRT loaded.
+        // The actual validation of whether a transcript exists happens at analysis time.
+        var ready = !!(srt || hasSequence || hasCaptions);
 
         var btn  = document.getElementById('analyzeBtn');
         var hint = document.getElementById('analyzeBtnHint');
         if (btn) btn.disabled = !ready;
         if (hint) {
-            if (!fcpxml) {
-                hint.textContent = 'Load FCPXML file above to start';
+            if (!ready) {
+                hint.textContent = 'Open a sequence in Premiere or load an SRT transcript above';
                 hint.style.display = '';
-            } else if (!ready) {
-                hint.textContent = hasCaptions
-                    ? 'FCPXML has embedded captions — ready to analyze'
-                    : 'Load SRT transcript above to enable';
+            } else if (srt && !hasSequence) {
+                hint.textContent = srt.length + ' transcript entries loaded — ready to analyze';
                 hint.style.display = '';
-                if (hasCaptions) btn && (btn.disabled = false);
             } else {
                 hint.style.display = 'none';
             }
@@ -1336,6 +1409,225 @@ const UIController = {
         this.updateStatus('ready', 'READY');
     },
 
+    // ── AI Tools ──────────────────────────────────────────────────────────────
+
+    async organizeProjectBins() {
+        const btn = document.getElementById('organizeBinsBtn');
+        const log = document.getElementById('organizeLog');
+        if (!log) return;
+
+        btn.disabled    = true;
+        btn.textContent = '⏳ Organizing…';
+        log.innerHTML   = '';
+        log.style.display = 'block';
+
+        const self = this;
+
+        function addEntry(icon, msg, color) {
+            const row = document.createElement('div');
+            row.style.cssText = 'display:flex;align-items:flex-start;gap:6px;padding:4px 8px;' +
+                                'border-bottom:1px solid rgba(255,255,255,0.05);animation:ambar-fadein 0.15s ease';
+            row.innerHTML = '<span style="flex-shrink:0;line-height:1.6">' + icon + '</span>' +
+                            '<span style="color:' + (color || 'var(--text-2,#aaa)') + ';line-height:1.6;word-break:break-all">' +
+                            msg + '</span>';
+            log.appendChild(row);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        function onProgress(e) {
+            if (e.type === 'start') {
+                addEntry('📋', 'Found ' + e.total + ' clip' + (e.total === 1 ? '' : 's') + ' — starting Pass 1 (llava descriptions)…');
+            } else if (e.type === 'pass1-start') {
+                addEntry('🚀', 'Extracting frames in parallel…');
+            } else if (e.type === 'extracting') {
+                addEntry('🎬', '[' + e.index + '/' + e.total + '] ' + e.name + ' — extracting frame…');
+            } else if (e.type === 'describing') {
+                addEntry('👁', '[' + e.index + '/' + e.total + '] ' + e.name + ' — llava describing…');
+            } else if (e.type === 'described') {
+                addEntry('💬', '[' + e.index + '/' + e.total + '] ' + e.name + ': ' + (e.description || '…'), 'var(--text-2,#888)');
+            } else if (e.type === 'classifying-all') {
+                addEntry('🧠', 'Pass 2 — classifying all ' + e.total + ' clip' + (e.total === 1 ? '' : 's') + ' in one AI call…', '#7ecbff');
+            } else if (e.type === 'classified') {
+                var confStr = (e.confidence > 0) ? ' (' + (e.confidence * 100).toFixed(0) + '%)' : '';
+                addEntry('📁', e.name + ' → ' + e.binName + confStr, '#7ecbff');
+            } else if (e.type === 'skip') {
+                addEntry('⚠', '[' + e.index + '/' + e.total + '] ' + e.name + ' skipped — ' + e.reason, '#ff9800');
+            } else if (e.type === 'creating-bin') {
+                addEntry('📂', 'Creating bin ' + e.binName + ' (' + e.count + ' clip' + (e.count === 1 ? '' : 's') + ')…');
+            } else if (e.type === 'bin-done') {
+                addEntry('✅', 'Moved ' + e.count + ' clip' + (e.count === 1 ? '' : 's') + ' → ' + e.binName, '#4caf50');
+            } else if (e.type === 'bin-error') {
+                addEntry('❌', e.binName + ' failed: ' + e.error, '#e57373');
+            } else if (e.type === 'done') {
+                const summary = e.bins
+                    .filter(function(b) { return b.success; })
+                    .map(function(b) { return b.binName; })
+                    .join(', ');
+                if (e.totalMoved > 0) {
+                    addEntry('🎉', 'Done — ' + e.totalMoved + ' clip' + (e.totalMoved === 1 ? '' : 's') +
+                             ' organized' + (summary ? ' into ' + summary : ''), '#4caf50');
+                } else {
+                    addEntry('⚠', 'Done — 0 clips moved. Check Ollama is running with llava pulled (ollama pull llava)', '#ff9800');
+                }
+            }
+        }
+
+        try {
+            await ProjectOrganizer.organizeProjectClips(onProgress);
+        } catch (e) {
+            addEntry('❌', 'Error: ' + e.message, '#e57373');
+        }
+
+        btn.disabled    = false;
+        btn.textContent = '🗂 Organize Project Bins';
+    },
+
+    async testFrameExtraction() {
+        const btn    = document.getElementById('testFrameBtn');
+        const status = document.getElementById('frameTestStatus');
+        if (!status) return;
+
+        btn.disabled    = true;
+        btn.textContent = '⏳ Testing…';
+        status.style.display    = 'block';
+        status.style.background = 'var(--surface-2, #1a1a2e)';
+        status.style.color      = 'var(--text-2, #aaa)';
+        status.textContent      = 'Getting source file…';
+
+        try {
+            // Get the active sequence's source file path
+            const sequence = await PremiereAPI.getActiveSequenceAsync();
+            if (!sequence) {
+                status.style.color = '#e57373';
+                status.textContent = '✗ No active sequence — open a sequence first.';
+                btn.disabled = false; btn.textContent = '🎞 Test Frame Extraction';
+                return;
+            }
+
+            const sourcePath = await PremiereAPI.getSourceFilePath(sequence);
+            if (!sourcePath) {
+                status.style.color = '#e57373';
+                status.textContent = '✗ Could not read source file path — is the CEP bridge panel open?';
+                btn.disabled = false; btn.textContent = '🎞 Test Frame Extraction';
+                return;
+            }
+
+            status.textContent = 'Extracting frame via CEP bridge (ffmpeg)…';
+            const base64 = await FrameExtractor.extractFrame(sourcePath, 5);
+            if (!base64) {
+                status.style.color = '#ff9800';
+                status.textContent = '⚠ Frame extraction failed. Install ffmpeg (winget install ffmpeg) then reload the CEP Bridge panel (Window → Extensions → Ambar Bridge).';
+                btn.disabled = false; btn.textContent = '🎞 Test Frame Extraction';
+                return;
+            }
+
+            status.textContent = 'Frame OK (' + Math.round(base64.length * 0.75 / 1024) + ' KB). Running Ollama moondream…';
+            const desc = await VisionService.describeFrame(base64, CONSTANTS.VISION_MODEL);
+            if (desc.success) {
+                status.style.color = '#4caf50';
+                status.textContent = '✓ Vision AI works! "' + desc.description + '"';
+            } else {
+                status.style.color = '#ff9800';
+                status.textContent = '⚠ Frame OK but Ollama failed: ' + (desc.error || 'unknown error') + '. Is Ollama running? Run: ollama pull moondream';
+            }
+        } catch (e) {
+            status.style.color = '#e57373';
+            status.textContent = '✗ ' + e.message;
+        }
+
+        btn.disabled = false;
+        btn.textContent = '🎞 Test Frame Extraction';
+    },
+
+    async suggestBroll() {
+        const btn      = document.getElementById('suggestBrollBtn');
+        const placeBtn = document.getElementById('placeBrollBtn');
+        const log      = document.getElementById('brollLog');
+        if (!log) return;
+
+        btn.disabled    = true;
+        btn.textContent = '⏳ Matching…';
+        if (placeBtn) placeBtn.disabled = true;
+        log.innerHTML     = '';
+        log.style.display = 'block';
+
+        function addEntry(icon, msg, color) {
+            const row = document.createElement('div');
+            row.style.cssText = 'display:flex;align-items:flex-start;gap:6px;padding:4px 8px;' +
+                                'border-bottom:1px solid rgba(255,255,255,0.05);animation:ambar-fadein 0.15s ease';
+            row.innerHTML = '<span style="flex-shrink:0;line-height:1.6">' + icon + '</span>' +
+                            '<span style="color:' + (color || 'var(--text-2,#aaa)') + ';line-height:1.6;word-break:break-all">' +
+                            msg + '</span>';
+            log.appendChild(row);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        try {
+            addEntry('🔍', 'Fetching project clips and matching to transcript…');
+            const result = await BrollPlacer.suggestBroll();
+
+            if (!result.success) {
+                addEntry('❌', result.error || 'Failed', '#e57373');
+            } else {
+                const placements = result.plan.placements;
+                if (placements.length === 0) {
+                    addEntry('⚠', 'AI found no suitable B-roll moments. Check transcript and available clips.', '#ff9800');
+                } else {
+                    addEntry('✅', 'AI suggested ' + placements.length + ' placement(s) — review then click Place.', '#4caf50');
+                    for (var i = 0; i < placements.length; i++) {
+                        const p = placements[i];
+                        const dur = (p.durationSeconds || 5).toFixed(1);
+                        addEntry('🎬', p.clipName + ' @ ' + p.atSeconds.toFixed(1) + 's (' + dur + 's) — ' + (p.reason || ''), '#7ecbff');
+                    }
+                    if (placeBtn) placeBtn.disabled = false;
+                }
+            }
+        } catch (e) {
+            addEntry('❌', 'Error: ' + e.message, '#e57373');
+        }
+
+        btn.disabled    = false;
+        btn.textContent = '🎬 Suggest B-roll';
+    },
+
+    async commitBroll() {
+        const btn  = document.getElementById('placeBrollBtn');
+        const log  = document.getElementById('brollLog');
+        if (!log || !BrollPlacer._lastPlan || !BrollPlacer._lastPlan.placements.length) return;
+
+        btn.disabled    = true;
+        btn.textContent = '⏳ Placing…';
+
+        function addEntry(icon, msg, color) {
+            const row = document.createElement('div');
+            row.style.cssText = 'display:flex;align-items:flex-start;gap:6px;padding:4px 8px;' +
+                                'border-bottom:1px solid rgba(255,255,255,0.05);animation:ambar-fadein 0.15s ease';
+            row.innerHTML = '<span style="flex-shrink:0;line-height:1.6">' + icon + '</span>' +
+                            '<span style="color:' + (color || 'var(--text-2,#aaa)') + ';line-height:1.6;word-break:break-all">' +
+                            msg + '</span>';
+            log.appendChild(row);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        try {
+            addEntry('🎬', 'Placing B-roll on V2…');
+            const result = await BrollPlacer.commitBroll(BrollPlacer._lastPlan);
+            if (result.placed > 0) {
+                addEntry('🎉', 'Placed ' + result.placed + '/' + result.total + ' clip(s) on V2.', '#4caf50');
+            } else {
+                addEntry('⚠', 'No clips placed. Verify the CEP bridge panel is open (Window → Extensions → Ambar Bridge).', '#ff9800');
+            }
+            for (var i = 0; i < result.errors.length; i++) {
+                addEntry('❌', result.errors[i], '#e57373');
+            }
+        } catch (e) {
+            addEntry('❌', 'Error: ' + e.message, '#e57373');
+        }
+
+        btn.disabled    = false;
+        btn.textContent = '✅ Place B-roll on Timeline';
+    },
+
     runDiagnostic() {
         const out = document.getElementById('diagnosticOut');
         if (!out) return;
@@ -1591,6 +1883,101 @@ const UIController = {
         Logger.info('Diagnostic ran — ' + lines.length + ' checks');
     },
 
+    // ── Two-step timeline flow (new native workflow) ──────────────────
+
+    /**
+     * Step 1 — Analyze: read native Premiere transcript → AI → place markers.
+     * Stores the parsed editPlan so commitEdits() can use it without re-running AI.
+     * Called by the Analyze button (onclick="UIController.startTimelineAnalysis()").
+     */
+    startTimelineAnalysis: async function() {
+        var self     = this;
+        var provider = self._getProvider();
+        var apiKey   = self._getApiKey();
+        var noKeyOk  = provider === 'ollama' || provider === 'openai-compatible';
+
+        if (!noKeyOk && !apiKey) {
+            self.showError('Add an API key in the Settings tab first.');
+            return;
+        }
+
+        self._cancelRequested = false;
+        self._pendingEditPlan = null;
+        self._initAIService();
+        self.showLoading('Transcribing audio…');
+
+        try {
+            var srtFallback = UIState.getState('srtTranscript');
+            var result = await TimelineEditor.analyzeSequence(srtFallback);
+
+            if (self._cancelRequested) { UIState.set(CONSTANTS.STATES.READY); self.hideLoading(); return; }
+
+            if (!result.success) {
+                if (result.fileTooLarge) {
+                    var audioSection = document.getElementById('audioOverrideSection');
+                    if (audioSection) audioSection.style.display = '';
+                }
+                self.showError(result.error || 'Analysis failed — check provider settings or load an SRT file.');
+                return;
+            }
+
+            self._pendingEditPlan = result.editPlan;
+
+            var hint = document.getElementById('commitEditsHint');
+            if (hint) {
+                var n = result.silenceMarked || 0;
+                hint.textContent = n + ' silence marker' + (n === 1 ? '' : 's') + ' placed — review in the timeline, then commit.';
+                hint.style.display = '';
+            }
+
+            self.hideLoading();
+            Logger.info('Timeline analysis complete — ' + result.editPlan.segments.length + ' segment(s)');
+        } catch (e) {
+            Logger.error('startTimelineAnalysis: ' + e.message);
+            self.showError('Analysis failed: ' + e.message);
+            UIState.set(CONSTANTS.STATES.ERROR);
+        }
+    },
+
+    /**
+     * Step 2 — Commit: execute the ripple deletes stored in _pendingEditPlan.
+     * Disabled until analyzeAndMark completes successfully (UIState drives the button).
+     * Called by the Commit Edits button (onclick="UIController.commitEdits()").
+     */
+    commitEdits: async function() {
+        var self = this;
+
+        if (!self._pendingEditPlan) {
+            self.showError('Run Analyze first — no pending edit plan.');
+            return;
+        }
+
+        try {
+            var result = await TimelineEditor.commitEdits(self._pendingEditPlan);
+
+            if (result.success) {
+                self._pendingEditPlan = null;
+
+                var hint = document.getElementById('commitEditsHint');
+                if (hint) {
+                    var n = result.cutsApplied;
+                    hint.textContent = n + ' cut' + (n === 1 ? '' : 's') + ' applied. Undo with Ctrl+Z to revert all at once.';
+                }
+            } else {
+                // Distinguish "bridge missing" from "bridge timed out after cuts"
+                var bridgeMsg = result.timedOut
+                    ? 'CEP bridge timed out — cuts may still have been applied. Check your timeline before retrying.'
+                    : 'No clips were deleted. ' + CONSTANTS.MESSAGES.BRIDGE_MISSING;
+                self.showError('Commit finished but ' + bridgeMsg);
+                UIState.set(CONSTANTS.STATES.ERROR);
+            }
+        } catch (e) {
+            Logger.error('commitEdits: ' + e.message);
+            self.showError('Commit failed: ' + e.message);
+            UIState.set(CONSTANTS.STATES.ERROR);
+        }
+    },
+
     toggleDebugMode() {
         const cb = document.getElementById('enableDebug');
         const on = cb ? cb.checked : false;
@@ -1736,16 +2123,18 @@ const UIController = {
                 }
             }
 
-            // Restore provider selector and model
-            if (settings.aiProvider) {
+            // Restore provider selector and model from UI, but prioritize CONSTANTS
+            if (settings.aiProvider || CONSTANTS.AI_PROVIDER) {
                 const provEl = document.getElementById('aiProvider');
-                if (provEl) provEl.value = settings.aiProvider;
-                CONSTANTS.AI_PROVIDER = settings.aiProvider;
-                this._updateProviderUI(settings.aiProvider);
+                const displayProvider = CONSTANTS.AI_PROVIDER || settings.aiProvider;
+                if (provEl) provEl.value = displayProvider;
+                CONSTANTS.AI_PROVIDER = displayProvider;
+                this._updateProviderUI(displayProvider);
             }
-            if (settings.aiModel) {
+            if (settings.aiModel || CONSTANTS.AI_MODEL) {
                 const modEl = document.getElementById('aiModel');
-                if (modEl) modEl.value = settings.aiModel;
+                const displayModel = CONSTANTS.AI_MODEL || settings.aiModel;
+                if (modEl) modEl.value = displayModel;
             }
 
             // Restore base URL field
@@ -1754,15 +2143,15 @@ const UIController = {
                 if (urlEl) urlEl.value = settings.baseUrl;
             }
 
-            // Initialize AI service from restored settings
+            // Initialize AI service from CONSTANTS (primary) or restored settings (secondary)
             AIService.initialize({
-                provider: settings.aiProvider || 'ollama',
+                provider: CONSTANTS.AI_PROVIDER || settings.aiProvider || 'ollama',
                 apiKey:   settings.apiKey     || '',
-                model:    settings.aiModel    || '',
+                model:    CONSTANTS.AI_MODEL || settings.aiModel    || '',
                 baseUrl:  settings.baseUrl    || '',
             });
 
-            Logger.debug('Settings restored: provider=' + (settings.aiProvider || 'ollama'));
+            Logger.debug('Settings restored: provider=' + (CONSTANTS.AI_PROVIDER || settings.aiProvider || 'ollama') + ', model=' + (CONSTANTS.AI_MODEL || settings.aiModel || ''));
         } catch (e) {
             Logger.error('Failed to restore settings', e);
         }

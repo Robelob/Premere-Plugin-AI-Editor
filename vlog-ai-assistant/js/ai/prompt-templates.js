@@ -1,5 +1,96 @@
 /* prompt-templates.js - AI prompt engineering templates */
 
+// ── Private helpers ───────────────────────────────────────────────────────────
+
+const TICKS = 254016000000;
+
+function _ticksToSecs(tickTime) {
+    if (!tickTime) return 0;
+    // Handle both { ticks: BigInt } shape and raw number/BigInt
+    var raw = (tickTime && tickTime.ticks !== undefined) ? tickTime.ticks : tickTime;
+    return Number(raw) / TICKS;
+}
+
+// Convert Premiere SRT timecode (00:00:01,290 or 00:00:01.290) to seconds
+function _srtTcToSeconds(tc) {
+    var s = tc.trim().replace(',', '.');
+    var parts = s.split(':');
+    if (parts.length !== 3) return 0;
+    return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
+}
+
+// Resolve start or end seconds from a word entry.
+// Handles both new format { startTicks, endTicks } (BigInt) and
+// old format { startTime: { ticks }, endTime: { ticks } }.
+function _wordSecs(w, which) {
+    if (!w) return 0;
+    if (which === 'start') {
+        if (w.startTicks !== undefined) return Number(w.startTicks) / TICKS;
+        return _ticksToSecs(w.startTime);
+    }
+    if (w.endTicks !== undefined) return Number(w.endTicks) / TICKS;
+    return _ticksToSecs(w.endTime);
+}
+
+// Format Premiere native transcript into a readable annotated block.
+// Annotates silences longer than MIN_SILENCE_SECONDS so the AI can see them.
+function _formatTranscript(transcriptData) {
+    var words = [];
+    try {
+        // Accepts { words: [...] }, a plain array, or null
+        var raw = (transcriptData && transcriptData.words) ? transcriptData.words : (Array.isArray(transcriptData) ? transcriptData : []);
+        for (var i = 0; i < raw.length; i++) words.push(raw[i]);
+    } catch (_) {}
+
+    if (!words.length) return '(no transcript available — AI will estimate based on context)';
+
+    var out     = '';
+    var lineStart = _wordSecs(words[0], 'start');
+    var lineWords = [];
+    var prevEnd   = lineStart;
+    var MIN_SILENCE = (typeof CONSTANTS !== 'undefined') ? CONSTANTS.MIN_SILENCE_SECONDS : 1.2;
+
+    for (var i = 0; i < words.length; i++) {
+        var w      = words[i];
+        var wStart = _wordSecs(w, 'start');
+        var wEnd   = _wordSecs(w, 'end');
+        var gap    = wStart - prevEnd;
+
+        // Annotate notable gaps inline so the AI doesn't have to compute them
+        if (gap >= MIN_SILENCE) {
+            if (lineWords.length) {
+                out += '[' + lineStart.toFixed(2) + 's] ' + lineWords.join(' ') + '\n';
+                lineWords = [];
+            }
+            out += '  *** SILENCE ' + gap.toFixed(2) + 's [' + prevEnd.toFixed(2) + 's → ' + wStart.toFixed(2) + 's] ***\n';
+            lineStart = wStart;
+        }
+
+        // Group into ~10-word display lines for readability
+        lineWords.push(w.word || w.text || '');
+        prevEnd = wEnd;
+
+        if (lineWords.length >= 10 || i === words.length - 1) {
+            out += '[' + lineStart.toFixed(2) + 's] ' + lineWords.join(' ') + '\n';
+            lineWords = [];
+            if (i < words.length - 1) lineStart = _ticksToSecs(words[i + 1].startTime);
+        }
+    }
+
+    return out.trim();
+}
+
+// Return total duration of the transcript in seconds.
+function _transcriptDurationSeconds(transcriptData) {
+    try {
+        var raw = (transcriptData && transcriptData.words) ? transcriptData.words : (Array.isArray(transcriptData) ? transcriptData : []);
+        if (!raw.length) return 0;
+        return _wordSecs(raw[raw.length - 1], 'end');
+    } catch (_) { return 0; }
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
 const PromptTemplates = {
     getSilenceDetectionPrompt(metadata, threshold, minDuration) {
         var hasClips = metadata.clips && metadata.clips.length > 0;
@@ -144,15 +235,160 @@ const PromptTemplates = {
             '- type must be exactly "cut", "broll", or "story"';
     },
 
+    /**
+     * Build a B-roll matching prompt.
+     * transcriptBlocks: [{ startSeconds, endSeconds, text }] — from TimelineEditor._lastTranscriptBlocks
+     * availableClips:   [{ name, mediaPath, durationSeconds, binName }] — from CEP getBrollClips
+     */
+    getBrollMatchingPrompt: function(transcriptBlocks, availableClips) {
+        var blockLines = '';
+        for (var i = 0; i < transcriptBlocks.length; i++) {
+            var b = transcriptBlocks[i];
+            blockLines += '[' + b.startSeconds.toFixed(1) + 's – ' + b.endSeconds.toFixed(1) + 's] ' + b.text + '\n';
+        }
+
+        var clipLines = '';
+        for (var j = 0; j < availableClips.length; j++) {
+            var c = availableClips[j];
+            var dur = c.durationSeconds ? ' (' + c.durationSeconds.toFixed(1) + 's)' : '';
+            var bin = c.binName ? ' [' + c.binName + ']' : '';
+            clipLines += '  • ' + c.name + dur + bin + '\n';
+        }
+
+        return (
+            'TRANSCRIPT BLOCKS (with timestamps):\n' +
+            (blockLines || '(no transcript available)\n') +
+            '\nAVAILABLE PROJECT CLIPS:\n' +
+            (clipLines || '(no clips found)\n') +
+            '\nRULES:\n' +
+            '- clipName must EXACTLY match a name from AVAILABLE PROJECT CLIPS (including extension)\n' +
+            '- atSeconds is the sequence timeline position where the B-roll should START (float)\n' +
+            '- durationSeconds: how long to show the clip (min 2.0s, max = clip duration shown above)\n' +
+            '- Only suggest B-roll where the speaker describes something visual (location, product, action)\n' +
+            '- Do NOT cover talking-head moments — only cover content that benefits from visual reinforcement\n' +
+            '- Clips in "🎙 Talking Head" bin should NEVER be used as B-roll\n' +
+            '- Suggest 3–8 placements total\n' +
+            '\nReturn ONLY valid JSON:\n' +
+            '{\n' +
+            '  "placements": [\n' +
+            '    {\n' +
+            '      "clipName": "DJI_0042.mp4",\n' +
+            '      "atSeconds": 12.5,\n' +
+            '      "durationSeconds": 5.0,\n' +
+            '      "reason": "Speaker mentions the market — aerial shot reinforces the location"\n' +
+            '    }\n' +
+            '  ]\n' +
+            '}'
+        );
+    },
+
+    /**
+     * Convert Premiere-exported SRT text into the transcript shape that
+     * getTimelineAnalysisPrompt() expects: { words: [{ word, startTime, endTime }] }
+     * Works with both word-level and sentence-level SRT exports.
+     */
+    parseSrtToTranscript(srtText) {
+        var words  = [];
+        var blocks = srtText.trim().split(/\r?\n\r?\n/);
+        for (var i = 0; i < blocks.length; i++) {
+            var lines = blocks[i].trim().split(/\r?\n/);
+            if (lines.length < 2) continue;
+
+            // Skip optional index number line
+            var tcLine    = lines[0];
+            var textStart = 1;
+            if (/^\d+$/.test(lines[0].trim())) {
+                tcLine    = lines[1];
+                textStart = 2;
+            }
+            if (!tcLine || !tcLine.includes('-->')) continue;
+
+            var parts    = tcLine.split('-->');
+            var startSec = _srtTcToSeconds(parts[0]);
+            var endSec   = _srtTcToSeconds(parts[1]);
+            var text     = lines.slice(textStart).join(' ').replace(/<[^>]+>/g, '').trim();
+            if (!text || endSec <= startSec) continue;
+
+            words.push({
+                word:       text,
+                startTime:  { ticks: Math.round(startSec * TICKS) },
+                endTime:    { ticks: Math.round(endSec   * TICKS) },
+                confidence: 1.0,
+            });
+        }
+        Logger.info('parseSrtToTranscript: ' + words.length + ' entries');
+        return { words: words };
+    },
+
     getSystemInstruction() {
-        return 'You are an AI video editing assistant specialized in vlog optimization.\n' +
-            'Your role is to:\n' +
-            '1. Identify technical issues (silence, pacing)\n' +
-            '2. Suggest editorial improvements (B-roll, transitions)\n' +
-            '3. Enhance accessibility (captions, descriptions)\n\n' +
-            'Always respond with valid JSON.\n' +
-            'Be precise with timestamps and confidence scores.\n' +
-            'Consider the vlog\'s purpose and audience.';
+        return (
+            'You are Ambar, a professional vlog editor. You think in complete thoughts and ' +
+            'natural sentences — not individual words or timestamps.\n\n' +
+            'Your job is to identify segments to DELETE from the vlog. You return ONLY a ' +
+            'JSON object matching the schema below. Never suggest a cut unless:\n' +
+            '  1. Silence exceeds ' + CONSTANTS.MIN_SILENCE_SECONDS + ' seconds (genuine dead air, not a breath)\n' +
+            '  2. The speaker is clearly restarting a sentence (false start / retake)\n' +
+            '  3. There is obvious filler with no informational content\n\n' +
+            'Group consecutive words into thematic blocks before deciding. ' +
+            'A "thought" is a complete sentence or idea. Never cut inside a thought.\n\n' +
+            'Confidence below ' + CONSTANTS.MIN_CONFIDENCE + ' will be automatically discarded — ' +
+            'only include segments you are confident about.\n\n' +
+            'Always respond with valid JSON. No markdown fences, no explanation text.'
+        );
+    },
+
+    /**
+     * Build the analysis prompt from a native Premiere transcript.
+     *
+     * transcriptData: object returned by sequence.getTranscript()
+     *   Expected shape: { words: [{ word, startTime: { ticks }, endTime: { ticks }, confidence }] }
+     *   Falls back gracefully if the shape varies.
+     */
+    getTimelineAnalysisPrompt(transcriptData) {
+        var lines    = _formatTranscript(transcriptData);
+        var duration = _transcriptDurationSeconds(transcriptData);
+
+        var header = (
+            'SEQUENCE DURATION: ' + duration.toFixed(1) + 's\n' +
+            'SILENCE THRESHOLD: ' + CONSTANTS.MIN_SILENCE_SECONDS + 's\n' +
+            'MIN CONFIDENCE: ' + CONSTANTS.MIN_CONFIDENCE + '\n\n' +
+            'TRANSCRIPT (word-level timing):\n' +
+            lines
+        );
+
+        var schema = (
+            '{\n' +
+            '  "summary": "2-3 sentence overall pacing assessment",\n' +
+            '  "segments": [\n' +
+            '    {\n' +
+            '      "startSeconds": 12.4,\n' +
+            '      "endSeconds": 14.1,\n' +
+            '      "reason": "1.7s dead air after sentence ends",\n' +
+            '      "type": "silence",\n' +
+            '      "confidence": 0.94\n' +
+            '    }\n' +
+            '  ],\n' +
+            '  "brollOpportunities": [\n' +
+            '    {\n' +
+            '      "atSeconds": 23.0,\n' +
+            '      "suggestion": "Show the product being used",\n' +
+            '      "confidence": 0.82\n' +
+            '    }\n' +
+            '  ]\n' +
+            '}'
+        );
+
+        return (
+            header + '\n\n' +
+            '━━━ TASK ━━━\n' +
+            'Analyze the transcript above. Identify segments to DELETE — silence gaps, ' +
+            'false starts, and dead air. Never cut inside a complete thought.\n\n' +
+            'type must be exactly "silence", "retake", or "filler".\n' +
+            'startSeconds and endSeconds are sequence positions in decimal seconds.\n' +
+            'Order segments by startSeconds ascending.\n\n' +
+            'Return ONLY valid JSON matching this schema exactly:\n' +
+            schema
+        );
     },
 };
 
