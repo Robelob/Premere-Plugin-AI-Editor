@@ -1,54 +1,85 @@
-/* Ambar — Design Tokens
-   UXP-safe: standard hex + rgba only (no oklch).
-   ──────────────────────────────────────────────── */
+/* Ambar — Design Tokens v2
+   Space Grotesk + JetBrains Mono. UXP-safe: hex/rgba only. */
 :root {
-  /* Surface stack — violet-tinged near-black */
-  --bg-0: #0b0c16;
-  --bg-1: #10121e;
-  --bg-2: #181c2e;
-  --bg-3: #1e2236;
-  --bg-4: #252b42;
+  /* ── Typography ── */
+  --font-primary: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono:    'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, monospace;
+  --font-ui:      var(--font-primary);
 
-  /* Borders */
-  --border-1: rgba(140, 150, 210, 0.12);
-  --border-2: rgba(140, 150, 210, 0.24);
-  --border-amber: rgba(255, 181, 71, 0.35);
+  /* ── Surface stack ── */
+  --bg-base:    #0D0F14;
+  --bg-surface: #161920;
+  --bg-raised:  #1C2027;
+  --bg-hover:   #1F2430;
 
-  /* Text */
-  --text-1: #eef0f8;
-  --text-2: #adb5cc;
-  --text-3: #7c879e;
-  --text-4: #4e5770;
+  /* Backward-compat aliases */
+  --bg-0: var(--bg-base);
+  --bg-1: var(--bg-surface);
+  --bg-2: var(--bg-raised);
+  --bg-3: #222830;
+  --bg-4: #2a3040;
 
-  /* Brand — Amber */
-  --amber:        #ffb547;
-  --amber-bright: #ffc870;
-  --amber-dim:    #c87e20;
-  --amber-tint:   rgba(255, 181, 71, 0.10);
+  /* ── Brand amber ── */
+  --amber:        #F5C34A;
+  --amber-bright: #FFD46B;
+  --amber-dim:    rgba(245, 195, 74, 0.12);
+  --amber-border: rgba(245, 195, 74, 0.30);
+  --amber-glow:   rgba(245, 195, 74, 0.08);
+  --amber-tint:   rgba(245, 195, 74, 0.12);
+  --amber-dim-old: #C89800;
 
-  /* AI gradient — magenta → violet → cyan */
-  --ai-violet:  #8b5cf6;
-  --ai-magenta: #d946ef;
-  --ai-cyan:    #22d3ee;
+  /* Button tokens */
+  --btn-grad: linear-gradient(135deg, #F5C34A 0%, #E0A800 100%);
+  --btn-text: #0D0F14;
+
+  /* ── Text ── */
+  --text-primary:   #E8E6E0;
+  --text-secondary: rgba(232, 230, 224, 0.55);
+  --text-muted:     rgba(232, 230, 224, 0.30);
+
+  /* Backward-compat aliases */
+  --text-1: var(--text-primary);
+  --text-2: var(--text-secondary);
+  --text-3: var(--text-muted);
+  --text-4: rgba(232, 230, 224, 0.15);
+
+  /* ── Borders ── */
+  --border-base:  rgba(255, 255, 255, 0.08);
+  --border-hover: rgba(255, 255, 255, 0.14);
+  --border-amber: rgba(245, 195, 74, 0.30);
+
+  /* Backward-compat aliases */
+  --border-1: var(--border-base);
+  --border-2: var(--border-hover);
+
+  /* ── Status ── */
+  --green:       #2ECC71;
+  --red:         #E24B4A;
+  --blue:        #4A90E2;
+  --success:     var(--green);
+  --danger:      var(--red);
+  --warning:     #f59e0b;
+  --success-dim: rgba(46, 204, 113, 0.12);
+  --danger-dim:  rgba(226, 75, 74, 0.12);
+  --warning-dim: rgba(245, 158, 11, 0.12);
+
+  /* ── AI accents ── */
+  --ai-violet:    #8b5cf6;
+  --ai-magenta:   #d946ef;
+  --ai-cyan:      #22d3ee;
   --ai-grad:      linear-gradient(135deg, #d946ef 0%, #7c3aed 50%, #22d3ee 100%);
   --ai-grad-soft: linear-gradient(135deg, rgba(217,70,239,0.16) 0%, rgba(124,58,237,0.16) 50%, rgba(34,211,238,0.16) 100%);
 
-  /* Status */
-  --success:     #3fc87a;
-  --warning:     #f59e0b;
-  --danger:      #ef4444;
-  --success-dim: rgba(63, 200, 122, 0.14);
-  --warning-dim: rgba(245, 158, 11, 0.14);
-  --danger-dim:  rgba(239, 68, 68, 0.14);
+  /* ── Radius ── */
+  --radius-sm:   6px;
+  --radius-md:   8px;
+  --radius-lg:   12px;
+  --radius-pill: 99px;
 
-  /* Shape */
-  --r-sm:   4px;
-  --r-md:   7px;
-  --r-lg:   11px;
-  --r-xl:   15px;
-  --r-full: 999px;
-
-  /* Typography */
-  --font-ui:   -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
-  --font-mono: "Cascadia Code", "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  /* Backward-compat aliases */
+  --r-sm:   var(--radius-sm);
+  --r-md:   var(--radius-md);
+  --r-lg:   var(--radius-lg);
+  --r-xl:   14px;
+  --r-full: var(--radius-pill);
 }

@@ -482,34 +482,29 @@
   gap: 7px;
   width: 100%;
   padding: 11px 18px;
-  background: linear-gradient(135deg, #d946ef 0%, #7c3aed 50%, #22d3ee 100%);
+  background: var(--btn-grad);
   border: none;
   border-radius: var(--r-md);
-  color: #07040f;
+  color: var(--btn-text);
   font-family: var(--font-ui);
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 700;
   cursor: pointer;
   position: relative;
   overflow: hidden;
-  box-shadow: 0 0 0 1px rgba(0,0,0,0.40),
-              0 0 22px rgba(139, 92, 246, 0.40);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.25),
+              0 0 18px rgba(245, 195, 74, 0.28),
+              inset 0 1px 0 rgba(255,255,255,0.22);
   transition: filter 150ms, transform 80ms, box-shadow 150ms;
   letter-spacing: 0.01em;
 }
-.cta-btn::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.22), transparent);
-  transform: translateX(-100%);
-  animation: ai-shimmer 3s ease-in-out infinite;
-  pointer-events: none;
+.cta-btn:hover:not(:disabled) {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.25), 0 4px 20px rgba(245, 195, 74, 0.40), inset 0 1px 0 rgba(255,255,255,0.26);
 }
-.cta-btn:hover   { filter: brightness(1.10); transform: translateY(-1px); box-shadow: 0 0 0 1px rgba(0,0,0,0.40), 0 4px 28px rgba(139, 92, 246, 0.55); }
 .cta-btn:active  { transform: translateY(0); filter: brightness(0.95); }
-.cta-btn:disabled { opacity: 0.38; cursor: not-allowed; transform: none; filter: none; box-shadow: none; }
-.cta-btn:disabled::before { animation: none; }
+.cta-btn:disabled { opacity: 0.35; cursor: not-allowed; transform: none; filter: none; box-shadow: none; }
 .btn-icon { font-size: 12px; opacity: 0.9; }
 
 .secondary-btn {
@@ -519,29 +514,30 @@
   gap: 6px;
   width: 100%;
   padding: 8px 16px;
-  background: var(--bg-3);
-  border: 1px solid var(--border-1);
+  background: var(--amber-tint);
+  border: 1px solid rgba(245, 195, 74, 0.35);
   border-radius: var(--r-md);
-  color: var(--text-1);
+  color: var(--amber);
   font-size: 12.5px;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
   transition: background 80ms, border-color 80ms;
 }
-.secondary-btn:hover { background: var(--bg-4); border-color: var(--border-2); }
+.secondary-btn:hover { background: rgba(245, 195, 74, 0.18); border-color: rgba(245, 195, 74, 0.50); }
 
 .ghost-btn {
-  flex: 1;
   padding: 8px 12px;
   background: transparent;
-  border: 1px solid var(--border-1);
+  border: 0.5px solid var(--amber-border);
   border-radius: var(--r-md);
-  color: var(--text-3);
+  color: var(--amber);
   font-size: 12px;
+  font-family: var(--font-primary);
   cursor: pointer;
-  transition: background 80ms, border-color 80ms, color 80ms;
+  white-space: nowrap;
+  transition: background 80ms;
 }
-.ghost-btn:hover { background: var(--bg-2); border-color: var(--border-2); color: var(--text-1); }
+.ghost-btn:hover { background: var(--amber-dim); }
 
 /* ─────────────────────────────────────────────────────────
    RESULTS SECTION (legacy)

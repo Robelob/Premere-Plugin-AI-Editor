@@ -72,6 +72,17 @@
 - [ ] Remove deleted file `<script>` tags from `index.html`
 - [ ] Add new file `<script>` tags in correct order (see CLAUDE.md)
 
+## Phase 5 — UI & Captions (completed 2026-05-17)
+
+- [x] **UI redesign** — sidebar navigation (✂ Edit / 🎬 B-roll / 💬 Captions / 📁 Organise / ⚙ Settings)
+- [x] **Caption SRT generation** — `CaptionEngine.generateSRT(words)` with 6-word / 42-char line limits
+- [x] **Caption track creation via CEP** — `ambar_importAndCreateCaptionTrack()` in host.jsx
+- [x] **Caption template selector** — 6 templates (Minimal, Box, Underline, Highlight, Spaced, Custom)
+- [x] **Custom .mogrt support** — file picker wired to caption template 'custom'
+- [x] **Export SRT** — Save As dialog via `UIController.exportSrt()`
+- [x] **FCPXML / SRT file pickers removed** from UI (replaced by native Premiere workflow)
+- [x] **Settings panel** — AI provider, model, base URL, API key, Whisper provider, vision model
+
 ## Phase 5 — Testing Gates
 
 **Phase 1+2 gate — run in UXP DevTools console:**

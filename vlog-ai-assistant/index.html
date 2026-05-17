@@ -3,6 +3,11 @@
 <head>
     <meta charset="utf-8" />
     <title>Ambar — AI Editor</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <!-- Styles -->
     <link rel="stylesheet" href="css/variables.css" />
     <link rel="stylesheet" href="css/main.css" />
     <link rel="stylesheet" href="css/components.css" />
@@ -13,394 +18,516 @@
 <body>
 <div class="panel">
 
-    <!-- ── Header ── -->
-    <div class="p-head">
-        <div class="p-head-title">
-            <div class="glyph"></div>
-            Ambar
-        </div>
-        <div class="p-head-spacer"></div>
-        <div class="status-pill status-ready" id="statusIndicator">
-            <div class="status-dot"></div>
-            <span id="statusText">READY</span>
+    <!-- ── Topbar ── -->
+    <div class="p-topbar topbar">
+        <div class="p-topbar-brand topbar-logo">✦ Ambar</div>
+        <div class="p-topbar-spacer topbar-spacer"></div>
+        <div class="seq-pill topbar-seq" id="seqPill">
+            <div class="seq-dot" id="seqDot"></div>
+            <span class="seq-pill-name" id="seqName">No sequence</span>
+            <span class="seq-pill-dur" id="seqDuration"></span>
         </div>
     </div>
 
-    <!-- ── Tab Bar ── -->
-    <div class="p-tabs">
-        <button class="tab-btn active" data-tab="import" onclick="UIController.switchTab('import')">
-            Import
-        </button>
-        <button class="tab-btn" data-tab="analyze" onclick="UIController.switchTab('analyze')">
-            Analyze
-        </button>
-        <button class="tab-btn" data-tab="review" onclick="UIController.switchTab('review')">
-            Review
-            <span class="tab-badge" id="reviewBadge" style="display:none">0</span>
-        </button>
-        <button class="tab-btn" data-tab="settings" onclick="UIController.switchTab('settings')">
-            Settings
-        </button>
-    </div>
+    <!-- ── Layout ── -->
+    <div class="p-layout">
 
-    <!-- ── Panel Body ── -->
-    <div class="p-body">
-
-        <!-- ════════════════════════════════════════
-             TAB 1 — IMPORT
-             ════════════════════════════════════════ -->
-        <div class="panel-content active" id="panel-import">
-
-            <!-- FCPXML drop zone -->
-            <div class="drop-zone-wrap">
-                <div class="section-label">Sequence · FCPXML</div>
-                <div class="drop-zone" id="fcpxmlDropZone"
-                     onclick="UIController.openFcpxmlPicker()"
-                     ondragover="event.preventDefault(); event.stopPropagation(); this.classList.add('drag-over')"
-                     ondragleave="this.classList.remove('drag-over')"
-                     ondrop="UIController.onFcpxmlDrop(event)">
-                    <div class="drop-icon" id="fcpxmlIcon">📂</div>
-                    <div class="drop-label" id="fcpxmlLabel">Click to browse or drop file here</div>
-                    <div class="drop-sub" id="fcpxmlSub">File → Export → Final Cut Pro XML</div>
-                    <div class="drop-filename" id="fcpxmlFilename" style="display:none"></div>
-                </div>
-            </div>
-
-            <!-- SRT drop zone -->
-            <div class="drop-zone-wrap">
-                <div class="section-label">Transcript · SRT</div>
-                <div class="drop-zone" id="srtDropZone"
-                     onclick="UIController.openSrtPicker()"
-                     ondragover="event.preventDefault(); event.stopPropagation(); this.classList.add('drag-over')"
-                     ondragleave="this.classList.remove('drag-over')"
-                     ondrop="UIController.onSrtDrop(event)">
-                    <div class="drop-icon" id="srtIcon">🎙</div>
-                    <div class="drop-label" id="srtLabel">Click to browse or drop file here</div>
-                    <div class="drop-sub" id="srtSub">Text → Speech to Text → Captions → Export SRT</div>
-                    <div class="drop-filename" id="srtFilename" style="display:none"></div>
-                </div>
-            </div>
-
-            <!-- Audio file override (shown when auto-transcription fails due to file size) -->
-            <div class="drop-zone-wrap" id="audioOverrideSection" style="display:none">
-                <div class="section-label" style="display:flex;align-items:center;gap:6px;">
-                    Audio File
-                    <span style="font-size:10px;color:#b34a00;background:#2d1a00;padding:1px 6px;border-radius:3px;">LARGE FILE DETECTED</span>
-                </div>
-                <div style="font-size:11px;color:#4e5770;margin-bottom:6px;line-height:1.4;">
-                    Your video is too large for auto-transcription (&gt;25 MB limit).<br>
-                    Extract audio only with HandBrake, VLC, or ffmpeg, then select it here.
-                </div>
-                <div class="drop-zone" id="audioFileZone"
-                     style="padding:12px;"
-                     onclick="UIController.openAudioPicker()"
-                     ondragover="event.preventDefault(); event.stopPropagation(); this.classList.add('drag-over')"
-                     ondragleave="this.classList.remove('drag-over')"
-                     ondrop="UIController.onAudioDrop(event)">
-                    <div class="drop-icon" id="audioIcon">🎵</div>
-                    <div class="drop-label" id="audioLabel">Click to browse audio/video file</div>
-                    <div class="drop-sub" id="audioSub">MP3, M4A, WAV, AAC — should be &lt;25 MB</div>
-                    <div class="drop-filename" id="audioFilename" style="display:none"></div>
-                </div>
-            </div>
-
-            <!-- Sequence summary card (shown after FCPXML parsed) -->
-            <div class="seq-summary" id="sequenceSummary">
-                <div class="seq-summary-title" id="sequenceName">—</div>
-                <div class="seq-stats">
-                    <div class="seq-stat">
-                        <div class="seq-stat-val" id="statDuration">—</div>
-                        <div class="seq-stat-label">Duration</div>
-                    </div>
-                    <div class="seq-stat">
-                        <div class="seq-stat-val" id="statClips">—</div>
-                        <div class="seq-stat-label">Clips</div>
-                    </div>
-                    <div class="seq-stat">
-                        <div class="seq-stat-val" id="statTracks">—</div>
-                        <div class="seq-stat-label">Tracks</div>
-                    </div>
-                    <div class="seq-stat">
-                        <div class="seq-stat-val" id="statLines">—</div>
-                        <div class="seq-stat-label">SRT Lines</div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Two-step CTA: Analyze → Commit -->
-            <div style="display:flex; flex-direction:column; gap:8px;">
-                <button class="cta-btn" id="analyzeBtn" onclick="UIController.startTimelineAnalysis()">
-                    ✦ &nbsp;Analyze with Ambar
-                </button>
-                <button class="cta-btn" id="commitEditsBtn" onclick="UIController.commitEdits()" disabled
-                        style="background:var(--amber,#e6a817); color:#000;">
-                    ✂ &nbsp;Commit Edits
-                </button>
-                <div class="field-hint" id="commitEditsHint" style="text-align:center; color:#4e5770; display:none"></div>
-            </div>
-
-        </div><!-- /panel-import -->
-
-        <!-- ════════════════════════════════════════
-             TAB 2 — ANALYZE
-             ════════════════════════════════════════ -->
-        <div class="panel-content" id="panel-analyze">
-
-            <!-- Pipeline steps -->
-            <div class="drop-zone-wrap">
-                <div class="section-label">Pipeline</div>
-                <div class="pipeline" id="pipelineSteps">
-                    <div class="pipeline-step pending" id="step-parse-xml">
-                        <span class="step-icon">📄</span>
-                        <span class="step-label">Parsing FCPXML</span>
-                        <span class="step-status" id="step-parse-xml-status">—</span>
-                    </div>
-                    <div class="pipeline-step pending" id="step-parse-srt">
-                        <span class="step-icon">🎙</span>
-                        <span class="step-label">Parsing transcript</span>
-                        <span class="step-status" id="step-parse-srt-status">—</span>
-                    </div>
-                    <div class="pipeline-step pending" id="step-match-broll">
-                        <span class="step-icon">🎞</span>
-                        <span class="step-label">Matching B-roll to topics</span>
-                        <span class="step-status" id="step-match-broll-status">—</span>
-                    </div>
-                    <div class="pipeline-step pending" id="step-detect-silence">
-                        <span class="step-icon">🔇</span>
-                        <span class="step-label">Detecting silence gaps</span>
-                        <span class="step-status" id="step-detect-silence-status">—</span>
-                    </div>
-                    <div class="pipeline-step pending" id="step-decisions">
-                        <span class="step-icon">✦</span>
-                        <span class="step-label">Generating edit decisions</span>
-                        <span class="step-status" id="step-decisions-status">—</span>
-                    </div>
-                </div>
-            </div>
-
-            <!-- AI streaming log -->
-            <div class="drop-zone-wrap">
-                <div class="section-label">AI Output</div>
-                <div class="ai-log" id="aiLog"></div>
-            </div>
-
-            <!-- Cancel -->
-            <button class="ghost-btn" id="cancelAnalysisBtn" onclick="UIController.cancelAnalysis()" style="display:none">
-                Cancel Analysis
+        <!-- ── Sidebar ── -->
+        <div class="p-sidebar sidebar">
+            <!-- Edit -->
+            <button class="sidebar-btn nav-btn active" data-panel="edit" title="Edit"
+                    onclick="UIController.switchPanel('edit')">
+                <svg class="sb-icon" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="6" cy="6" r="3"/>
+                    <circle cx="6" cy="18" r="3"/>
+                    <line x1="20" y1="4" x2="8.12" y2="15.88"/>
+                    <line x1="14.47" y1="14.48" x2="20" y2="20"/>
+                    <line x1="8.12" y1="8.12" x2="12" y2="12"/>
+                </svg>
+                <span class="sb-label">Edit</span>
             </button>
-
-            <!-- Empty state (before analysis) -->
-            <div class="empty-state" id="analyzeEmptyState">
-                <div class="empty-icon">✦</div>
-                <div class="empty-label">No analysis in progress</div>
-                <div class="empty-sub">Go to the Import tab, load your files,<br>and click "Analyze with Ambar".</div>
-            </div>
-
-        </div><!-- /panel-analyze -->
-
-        <!-- ════════════════════════════════════════
-             TAB 3 — REVIEW
-             ════════════════════════════════════════ -->
-        <div class="panel-content" id="panel-review">
-
-            <!-- Empty state (before any results) -->
-            <div class="empty-state" id="reviewEmptyState">
-                <div class="empty-icon">◈</div>
-                <div class="empty-label">No decisions yet</div>
-                <div class="empty-sub">Run an analysis from the Import tab<br>to see AI edit decisions here.</div>
-            </div>
-
-            <!-- Results area (shown after analysis) -->
-            <div id="reviewResults" style="display:none">
-
-                <!-- Summary stats -->
-                <div class="review-stats" id="reviewStats">
-                    <div class="review-stat">
-                        <div class="review-stat-val" id="statCuts">0</div>
-                        <div class="review-stat-label">Cuts</div>
-                    </div>
-                    <div class="review-stat">
-                        <div class="review-stat-val" id="statBroll">0</div>
-                        <div class="review-stat-label">B-Roll</div>
-                    </div>
-                    <div class="review-stat">
-                        <div class="review-stat-val" id="statStory">0</div>
-                        <div class="review-stat-label">Story</div>
-                    </div>
-                </div>
-
-                <!-- AI summary -->
-                <div class="review-summary" id="aiSummary"></div>
-
-                <!-- Decisions list -->
-                <div class="drop-zone-wrap">
-                    <div class="section-label">Edit Decisions</div>
-                    <div class="decisions-list" id="decisionsList"></div>
-                </div>
-
-                <!-- Export CTA -->
-                <button class="cta-btn" id="exportBtn" onclick="UIController.exportModifiedXml()" disabled>
-                    <span class="btn-icon">↓</span> Export Modified XML
-                </button>
-                <div class="field-hint" id="exportHint" style="text-align:center">Approve decisions above to enable export</div>
-                <div class="field-hint" style="text-align:center;margin-top:4px;color:var(--text-4)">Cuts &amp; B-roll → real FCPXML edits · Story → timeline markers</div>
-
-            </div><!-- /reviewResults -->
-
-        </div><!-- /panel-review -->
-
-        <!-- ════════════════════════════════════════
-             TAB 4 — SETTINGS
-             ════════════════════════════════════════ -->
-        <div class="panel-content" id="panel-settings">
-
-            <!-- AI Provider -->
-            <div class="field-group">
-                <div class="field-label">AI Provider</div>
-                <select id="aiProvider" class="select" onchange="UIController.onProviderChange()">
-                    <option value="ollama">Ollama — local / completely free</option>
-                    <option value="openai-compatible">OpenAI-compatible — Groq, LM Studio, etc.</option>
-                    <option value="gemini">Google Gemini (free tier available)</option>
-                    <option value="openai">OpenAI — GPT-4o / GPT-4o mini</option>
-                    <option value="anthropic">Anthropic — Claude Haiku / Sonnet</option>
-                </select>
-            </div>
-
-            <!-- Model -->
-            <div class="field-group">
-                <div class="field-label">
-                    Model
-                    <span class="help" id="modelDefault"></span>
-                </div>
-                <input type="text" id="aiModel" class="input"
-                       placeholder="leave blank for default"
-                       oninput="UIController.onModelInput()">
-            </div>
-
-            <!-- Base URL (Ollama / openai-compatible) -->
-            <div class="field-group" id="baseUrlGroup">
-                <div class="field-label">Base URL</div>
-                <input type="text" id="baseUrlInput" class="input mono"
-                       placeholder="http://localhost:11434/v1">
-                <div class="field-hint">Ollama default: http://localhost:11434/v1 · Groq: https://api.groq.com/openai/v1</div>
-            </div>
-
-            <!-- API Key (cloud providers) -->
-            <div class="field-group" id="apiKeyGroup" style="display:none">
-                <div class="field-label" id="apiKeyLabel">API Key</div>
-                <div class="input-group">
-                    <input type="password" id="apiKeyInput" class="input"
-                           placeholder="Paste your API key…"
-                           autocomplete="off"
-                           oninput="UIController.onApiKeyInput()">
-                    <button class="suffix" id="toggleKeyBtn"
-                            onclick="UIController.toggleApiKeyVisibility()"
-                            title="Show / hide key">👁</button>
-                </div>
-                <div class="field-hint" id="apiKeyHint">Free key → aistudio.google.com</div>
-            </div>
-
-            <!-- Save -->
-            <button class="btn amber block" onclick="UIController.saveSettings()">
-                Save Settings
+            <!-- B-roll -->
+            <button class="sidebar-btn nav-btn" data-panel="broll" title="B-roll"
+                    onclick="UIController.switchPanel('broll')">
+                <svg class="sb-icon" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="2" y="2" width="20" height="20" rx="2"/>
+                    <line x1="7" y1="2" x2="7" y2="22"/>
+                    <line x1="17" y1="2" x2="17" y2="22"/>
+                    <line x1="2" y1="12" x2="22" y2="12"/>
+                    <line x1="2" y1="7" x2="7" y2="7"/>
+                    <line x1="2" y1="17" x2="7" y2="17"/>
+                    <line x1="17" y1="17" x2="22" y2="17"/>
+                    <line x1="17" y1="7" x2="22" y2="7"/>
+                </svg>
+                <span class="sb-label">B-roll</span>
             </button>
+            <!-- Captions -->
+            <button class="sidebar-btn nav-btn" data-panel="captions" title="Captions"
+                    onclick="UIController.switchPanel('captions')">
+                <svg class="sb-icon" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                </svg>
+                <span class="sb-label">Captions</span>
+            </button>
+            <!-- Organise -->
+            <button class="sidebar-btn nav-btn" data-panel="organise" title="Organise"
+                    onclick="UIController.switchPanel('organise')">
+                <svg class="sb-icon" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                </svg>
+                <span class="sb-label">Organise</span>
+            </button>
+            <div class="sidebar-spacer"></div>
+            <!-- Settings -->
+            <button class="sidebar-btn nav-btn" data-panel="settings" title="Settings"
+                    onclick="UIController.switchPanel('settings')">
+                <svg class="sb-icon" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="3"/>
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                </svg>
+                <span class="sb-label">Settings</span>
+            </button>
+        </div>
 
-            <div class="divider"></div>
+        <!-- ── Main area ── -->
+        <div class="p-main">
 
-            <!-- Workflow preferences -->
-            <div class="drop-zone-wrap">
-                <div class="section-label">Preferences</div>
+            <!-- ════════════════════════════════════════
+                 PANEL — EDIT (silence removal)
+                 ════════════════════════════════════════ -->
+            <div class="panel-content active" id="panel-edit">
+
+                <div class="step-cards">
+                    <div class="section-label">Analysis Pipeline</div>
+
+                    <div class="step-card" id="step-silence">
+                        <span class="step-card-icon">🔇</span>
+                        <div class="step-card-body">
+                            <span class="step-card-label">Detect silences</span>
+                            <span class="step-card-sub" id="step-silence-sub">RMS energy scan</span>
+                        </div>
+                        <span class="step-badge waiting" id="step-silence-badge">waiting</span>
+                    </div>
+
+                    <div class="step-card" id="step-transcribe">
+                        <span class="step-card-icon">🎙</span>
+                        <div class="step-card-body">
+                            <span class="step-card-label">Transcribe speech</span>
+                            <span class="step-card-sub" id="step-transcribe-sub">Whisper word timestamps</span>
+                        </div>
+                        <span class="step-badge waiting" id="step-transcribe-badge">waiting</span>
+                    </div>
+
+                    <div class="step-card" id="step-ai-decisions">
+                        <span class="step-card-icon">✦</span>
+                        <div class="step-card-body">
+                            <span class="step-card-label">AI decisions</span>
+                            <span class="step-card-sub" id="step-ai-decisions-sub">Cuts + retakes</span>
+                        </div>
+                        <span class="step-badge waiting" id="step-ai-decisions-badge">waiting</span>
+                    </div>
+                </div>
+
+                <!-- AI output log -->
+                <div class="ai-log" id="aiLog" style="display:none"></div>
+
+                <!-- CTAs -->
+                <button class="cta-btn btn-primary" id="analyzeBtn"
+                        onclick="UIController.startTimelineAnalysis()">
+                    ✦ &nbsp;Analyze
+                </button>
+
+                <button class="cta-btn secondary btn-secondary" id="commitEditsBtn"
+                        onclick="UIController.commitEdits()" disabled>
+                    ✂ &nbsp;Commit edits
+                </button>
+
+                <div class="commit-hint" id="commitEditsHint" style="display:none"></div>
+
+                <button class="ghost-btn" id="cancelAnalysisBtn"
+                        onclick="UIController.cancelAnalysis()" style="display:none">
+                    Cancel
+                </button>
+
+            </div><!-- /panel-edit -->
+
+
+            <!-- ════════════════════════════════════════
+                 PANEL — BROLL
+                 ════════════════════════════════════════ -->
+            <div class="panel-content" id="panel-broll">
+
+                <div class="step-cards">
+                    <div class="section-label">B-roll Pipeline</div>
+
+                    <div class="step-card" id="step-vision-classify">
+                        <span class="step-card-icon">👁</span>
+                        <div class="step-card-body">
+                            <span class="step-card-label">Vision classify</span>
+                            <span class="step-card-sub">Ollama describes each clip frame</span>
+                        </div>
+                        <span class="step-badge waiting" id="step-vision-classify-badge">waiting</span>
+                    </div>
+
+                    <div class="step-card" id="step-suggest-placements">
+                        <span class="step-card-icon">🧠</span>
+                        <div class="step-card-body">
+                            <span class="step-card-label">Suggest placements</span>
+                            <span class="step-card-sub">AI matches B-roll to transcript</span>
+                        </div>
+                        <span class="step-badge waiting" id="step-suggest-placements-badge">waiting</span>
+                    </div>
+
+                    <div class="step-card" id="step-place-v2">
+                        <span class="step-card-icon">🎞</span>
+                        <div class="step-card-body">
+                            <span class="step-card-label">Place on V2</span>
+                            <span class="step-card-sub">Overwrite clips on video track 2</span>
+                        </div>
+                        <span class="step-badge waiting" id="step-place-v2-badge">waiting</span>
+                    </div>
+                </div>
+
+                <!-- Progress log -->
+                <div class="panel-log" id="brollLog" style="display:none"></div>
+
+                <!-- CTAs -->
+                <button class="cta-btn btn-primary" id="suggestBrollBtn"
+                        onclick="UIController.suggestBroll()">
+                    🎬 &nbsp;Suggest B-roll
+                </button>
+
+                <button class="cta-btn secondary btn-secondary" id="placeBrollBtn"
+                        onclick="UIController.commitBroll()" disabled>
+                    ✅ &nbsp;Place on timeline
+                </button>
+
+            </div><!-- /panel-broll -->
+
+
+            <!-- ════════════════════════════════════════
+                 PANEL — CAPTIONS
+                 ════════════════════════════════════════ -->
+            <div class="panel-content" id="panel-captions">
+
+                <!-- Caption style picker -->
+                <div>
+                    <div class="section-label panel-label">// Caption.Style</div>
+                    <div class="template-grid">
+
+                        <!-- 01 · Clean -->
+                        <button class="template-card selected" data-template="minimal"
+                                onclick="UIController.selectCaptionTemplate('minimal')">
+                            <div class="template-preview">
+                                <span style="color:#fff;font-family:'Space Grotesk',sans-serif;font-weight:500;font-size:11px">Hello world</span>
+                            </div>
+                            <div class="template-name">01 · Clean</div>
+                        </button>
+
+                        <!-- 02 · Dark box -->
+                        <button class="template-card" data-template="box"
+                                onclick="UIController.selectCaptionTemplate('box')">
+                            <div class="template-preview">
+                                <span style="color:#fff;background:rgba(0,0,0,0.78);padding:2px 5px;border-radius:3px;font-size:11px">Hello world</span>
+                            </div>
+                            <div class="template-name">02 · Dark box</div>
+                        </button>
+
+                        <!-- 03 · Outline -->
+                        <button class="template-card" data-template="outline"
+                                onclick="UIController.selectCaptionTemplate('outline')">
+                            <div class="template-preview" style="background:#555">
+                                <span style="color:#fff;text-shadow:-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000;font-size:11px;font-weight:600">Hello world</span>
+                            </div>
+                            <div class="template-name">03 · Outline</div>
+                        </button>
+
+                        <!-- 04 · Amber -->
+                        <button class="template-card" data-template="amber"
+                                onclick="UIController.selectCaptionTemplate('amber')">
+                            <div class="template-preview">
+                                <span style="color:#F5C34A;text-transform:uppercase;letter-spacing:0.06em;font-weight:700;font-size:10px">Hello world</span>
+                            </div>
+                            <div class="template-name">04 · Amber</div>
+                        </button>
+
+                        <!-- 05 · Underline -->
+                        <button class="template-card" data-template="underline"
+                                onclick="UIController.selectCaptionTemplate('underline')">
+                            <div class="template-preview">
+                                <span style="color:#fff;border-bottom:2px solid #F5C34A;padding-bottom:2px;font-size:11px">Hello world</span>
+                            </div>
+                            <div class="template-name">05 · Underline</div>
+                        </button>
+
+                        <!-- 06 · Word pop — animated karaoke preview -->
+                        <button class="template-card" data-template="custom"
+                                onclick="UIController.selectCaptionTemplate('custom')">
+                            <div class="template-preview" style="gap:3px">
+                                <span style="color:rgba(255,255,255,0.35);font-size:11px;animation:word-pop 1.6s 0s ease-in-out infinite">He</span>
+                                <span style="color:#F5C34A;font-size:11px;font-weight:700;animation:word-pop 1.6s 0.35s ease-in-out infinite">llo</span>
+                                <span style="color:rgba(255,255,255,0.35);font-size:11px;animation:word-pop 1.6s 0.7s ease-in-out infinite">wor</span>
+                                <span style="color:rgba(255,255,255,0.35);font-size:11px;animation:word-pop 1.6s 1.05s ease-in-out infinite">ld</span>
+                            </div>
+                            <div class="template-name">06 · Word pop</div>
+                        </button>
+
+                    </div>
+                </div>
+
+                <!-- Custom .mogrt import — always visible -->
+                <div>
+                    <div class="section-label panel-label">// Import Custom</div>
+                    <div class="mogrt-row" id="mogrtRow">
+                        <input type="text" class="input mono" id="mogrtPathInput"
+                               placeholder="Drop .mogrt template here…" readonly>
+                        <button class="ghost-btn" onclick="UIController.openMogrtPicker()" style="width:auto">Browse</button>
+                    </div>
+                    <div class="field-hint" style="margin-top:4px">
+                        Select a .mogrt file to place per caption line on V3. Word pop style uses this file.
+                    </div>
+                </div>
+
+                <!-- Style note -->
+                <div class="field-hint">
+                    Styles 01–05 generate an SRT caption track. For advanced styling, use Window → Captions workspace after generating.
+                </div>
+
+                <!-- CTAs -->
+                <button class="cta-btn btn-primary" id="generateCaptionsBtn"
+                        onclick="UIController.generateCaptions()">
+                    💬 &nbsp;Generate captions
+                </button>
+
+                <button class="cta-btn secondary btn-secondary" id="exportSrtBtn"
+                        onclick="UIController.exportSrt()">
+                    ↓ &nbsp;Export SRT
+                </button>
+
+                <div class="commit-hint" id="captionsHint" style="display:none"></div>
+
+            </div><!-- /panel-captions -->
+
+
+            <!-- ════════════════════════════════════════
+                 PANEL — ORGANISE
+                 ════════════════════════════════════════ -->
+            <div class="panel-content" id="panel-organise">
+
+                <!-- New footage alert -->
+                <div class="mem-alert" id="newFootageAlert" style="display:none"></div>
+
+                <div class="step-cards">
+                    <div class="section-label">Organisation Pipeline</div>
+
+                    <div class="step-card" id="step-vision-scan">
+                        <span class="step-card-icon">🔍</span>
+                        <div class="step-card-body">
+                            <span class="step-card-label">Vision scan</span>
+                            <span class="step-card-sub">Ollama classifies every clip frame</span>
+                        </div>
+                        <span class="step-badge waiting" id="step-vision-scan-badge">waiting</span>
+                    </div>
+
+                    <div class="step-card" id="step-create-bins">
+                        <span class="step-card-icon">📁</span>
+                        <div class="step-card-body">
+                            <span class="step-card-label">Create bins</span>
+                            <span class="step-card-sub">Moves clips into labelled bins</span>
+                        </div>
+                        <span class="step-badge waiting" id="step-create-bins-badge">waiting</span>
+                    </div>
+                </div>
+
+                <!-- Progress log -->
+                <div class="panel-log" id="organizeLog" style="display:none"></div>
+
+                <!-- CTA -->
+                <button class="cta-btn btn-primary" id="organizeBinsBtn"
+                        onclick="UIController.organizeProjectBins()">
+                    📁 &nbsp;Organise project bins
+                </button>
+
+            </div><!-- /panel-organise -->
+
+
+            <!-- ════════════════════════════════════════
+                 PANEL — SETTINGS
+                 ════════════════════════════════════════ -->
+            <div class="panel-content" id="panel-settings">
+
+                <!-- Sequence selector (hidden, used by refreshSequences) -->
+                <div class="field-group" style="display:none">
+                    <select id="sequenceSelect" onchange="UIController.onSequenceChange()">
+                        <option value="">── Open a sequence in Premiere ──</option>
+                    </select>
+                    <div id="seqHint" class="field-hint" style="display:none;color:var(--warning)">
+                        ⚠ No sequence detected
+                    </div>
+                </div>
+
+                <!-- AI Provider -->
+                <div class="field-group">
+                    <div class="field-label">AI Provider</div>
+                    <select id="aiProvider" class="select" onchange="UIController.onProviderChange()">
+                        <option value="ollama">Ollama — local / free</option>
+                        <option value="openai-compatible">OpenAI-compatible (Groq, LM Studio…)</option>
+                        <option value="gemini">Google Gemini</option>
+                        <option value="openai">OpenAI</option>
+                        <option value="anthropic">Anthropic — Claude</option>
+                    </select>
+                </div>
+
+                <!-- Model -->
+                <div class="field-group">
+                    <div class="field-label">
+                        Model
+                        <span class="field-hint" id="modelDefault" style="margin:0"></span>
+                    </div>
+                    <input type="text" id="aiModel" class="input"
+                           placeholder="leave blank for default"
+                           oninput="UIController.onModelInput()">
+                </div>
+
+                <!-- Base URL -->
+                <div class="field-group" id="baseUrlGroup">
+                    <div class="field-label">Base URL</div>
+                    <input type="text" id="baseUrlInput" class="input mono"
+                           placeholder="http://localhost:11434/v1">
+                    <div class="field-hint">Ollama: http://localhost:11434/v1 · Groq: https://api.groq.com/openai/v1</div>
+                </div>
+
+                <!-- API Key -->
+                <div class="field-group" id="apiKeyGroup" style="display:none">
+                    <div class="field-label" id="apiKeyLabel">API Key</div>
+                    <div class="input-group">
+                        <input type="password" id="apiKeyInput" class="input"
+                               placeholder="Paste your API key…"
+                               autocomplete="off"
+                               oninput="UIController.onApiKeyInput()">
+                        <button class="suffix" id="toggleKeyBtn"
+                                onclick="UIController.toggleApiKeyVisibility()"
+                                title="Show / hide key">👁</button>
+                    </div>
+                    <div class="field-hint" id="apiKeyHint">Free key → aistudio.google.com</div>
+                </div>
+
+                <!-- Whisper provider -->
+                <div class="field-group">
+                    <div class="field-label">Whisper Provider</div>
+                    <select id="whisperProvider" class="select" onchange="UIController.onWhisperProviderChange()">
+                        <option value="groq">Groq (cloud, fast)</option>
+                        <option value="openai">OpenAI</option>
+                        <option value="local-whisper">Local whisper.cpp</option>
+                    </select>
+                </div>
+
+                <!-- Vision model -->
+                <div class="field-group">
+                    <div class="field-label">Vision Model</div>
+                    <select id="visionModel" class="select" onchange="UIController.onVisionModelChange()">
+                        <option value="llava:7b">llava:7b</option>
+                        <option value="moondream">moondream</option>
+                        <option value="llava:13b">llava:13b</option>
+                    </select>
+                </div>
+
+                <!-- Save -->
+                <button class="cta-btn btn-primary" onclick="UIController.saveSettings()">
+                    Save settings
+                </button>
+
+                <div class="divider"></div>
+
+                <!-- Debug toggle -->
                 <label class="toggle-row">
                     <input type="checkbox" id="enableDebug" class="toggle-input"
                            onchange="UIController.toggleDebugMode()">
                     <div class="toggle"></div>
-                    <span class="toggle-label">Debug Mode</span>
+                    <span class="toggle-label">Debug mode</span>
                 </label>
+
+                <div class="divider"></div>
+
+                <!-- Diagnostic -->
+                <div>
+                    <div class="section-label">Diagnostic</div>
+                    <button class="ghost-btn" onclick="UIController.runDiagnostic()" style="margin-bottom:6px">
+                        Run diagnostic
+                    </button>
+                    <div id="diagnosticOut" class="diagnostic-out" style="display:none"></div>
+                </div>
+
+            </div><!-- /panel-settings -->
+
+
+            <!-- ── Loading overlay ── -->
+            <div id="loadingIndicator" class="loading-overlay" style="display:none">
+                <div class="scanner-box">
+                    <div class="scanner-bar"></div>
+                </div>
+                <div class="loading-text" id="loadingText">Analyzing…</div>
             </div>
 
-            <div class="divider"></div>
-
-            <!-- AI Tools -->
-            <div class="drop-zone-wrap">
-                <div class="section-label">AI Tools</div>
-                <button class="secondary-btn" id="organizeBinsBtn" onclick="UIController.organizeProjectBins()" style="width:100%;margin-bottom:8px">
-                    🗂 Organize Project Bins
-                </button>
-                <div class="field-hint" style="margin-bottom:4px">Classifies every clip with Ollama vision → moves into 🎙 Talking Head, 🏙 B-roll, 📦 Product, 💻 Screen Recording bins.</div>
-                <div id="organizeLog" style="display:none;max-height:200px;overflow-y:auto;font-size:11px;border-radius:4px;margin-top:6px;background:var(--surface-2,#111827);border:1px solid rgba(255,255,255,0.08)"></div>
-
-                <button class="secondary-btn" id="testFrameBtn" onclick="UIController.testFrameExtraction()" style="width:100%;margin-top:8px">
-                    🎞 Test Frame Extraction
-                </button>
-                <div class="field-hint">Verifies ffmpeg + Ollama vision on the first clip in your sequence.</div>
-                <div id="frameTestStatus" style="display:none;font-size:11px;padding:6px 8px;border-radius:4px;margin-top:4px"></div>
-
-                <button class="secondary-btn" id="suggestBrollBtn" onclick="UIController.suggestBroll()" style="width:100%;margin-top:8px">
-                    🎬 Suggest B-roll
-                </button>
-                <div class="field-hint">AI reads your transcript + project clips → suggests which B-roll to place and when. Run Analyze first.</div>
-                <button class="secondary-btn" id="placeBrollBtn" onclick="UIController.commitBroll()" style="width:100%;margin-top:4px" disabled>
-                    ✅ Place B-roll on Timeline
-                </button>
-                <div id="brollLog" style="display:none;max-height:220px;overflow-y:auto;font-size:11px;border-radius:4px;margin-top:6px;background:var(--surface-2,#111827);border:1px solid rgba(255,255,255,0.08)"></div>
+            <!-- ── Error bar ── -->
+            <div id="errorMessage" class="error-bar" style="display:none">
+                <span class="error-icon">⚠</span>
+                <span id="errorText" class="error-text"></span>
+                <button class="close-btn" onclick="document.getElementById('errorMessage').style.display='none'">✕</button>
             </div>
 
-            <div class="divider"></div>
-
-            <!-- Diagnostic -->
-            <div class="drop-zone-wrap">
-                <div class="section-label">Diagnostic</div>
-                <div class="field-group" style="margin-bottom:8px">
-                    <div class="field-label">Active Sequence (API)</div>
-                    <div class="input-group">
-                        <select id="sequenceSelect" class="select" style="border:none;background:transparent"
-                                onchange="UIController.onSequenceChange()">
-                            <option value="">── Open a sequence in Premiere ──</option>
-                        </select>
-                        <button class="suffix" onclick="UIController.refreshSequences()" title="Reload">↺</button>
+            <!-- ── PROJECT.MEMORY panel ── -->
+            <div class="memory-panel" id="memoryPanel">
+                <div class="mem-panel-header">
+                    <span>// Project.Memory</span>
+                    <span class="mem-seq-id" id="memSeqId">·</span>
+                    <div class="mem-header-line"></div>
+                </div>
+                <div class="mem-session-label">Session_State</div>
+                <div class="mem-rows">
+                    <div class="mem-row">
+                        <span class="mem-dot" id="memDot-edit"></span>
+                        <span class="mem-row-label">Silence cuts</span>
+                        <span class="mem-row-status" id="memStatus-edit">not run</span>
                     </div>
-                    <div id="seqHint" class="field-hint" style="display:none;color:var(--warning)">
-                        ⚠ No sequence detected — open a sequence in the Premiere timeline
+                    <div class="mem-row">
+                        <span class="mem-dot" id="memDot-broll"></span>
+                        <span class="mem-row-label">B-roll placed</span>
+                        <span class="mem-row-status" id="memStatus-broll">not run</span>
+                    </div>
+                    <div class="mem-row">
+                        <span class="mem-dot" id="memDot-captions"></span>
+                        <span class="mem-row-label">Captions</span>
+                        <span class="mem-row-status" id="memStatus-captions">not run</span>
+                    </div>
+                    <div class="mem-row" id="memRow-footage" style="display:none">
+                        <span class="mem-dot amber" id="memDot-footage"></span>
+                        <span class="mem-row-label" style="color:var(--amber)">New footage detected</span>
+                        <span class="mem-row-status" id="memStatus-footage">–</span>
+                    </div>
+                    <div class="mem-row">
+                        <span class="mem-dot" id="memDot-organise"></span>
+                        <span class="mem-row-label">Organise bins</span>
+                        <span class="mem-row-status" id="memStatus-organise">not run</span>
                     </div>
                 </div>
-                <button class="secondary-btn" onclick="UIController.runDiagnostic()">
-                    Run Diagnostic
-                </button>
-                <div id="diagnosticOut" class="diagnostic-out" style="display:none;margin-top:8px"></div>
             </div>
 
-            <!-- About -->
-            <div class="divider"></div>
-            <div style="text-align:center">
-                <div class="field-hint">Ambar v0.2.0 · FCPXML Round-Trip Workflow</div>
-                <div class="field-hint" style="margin-top:4px">AI does the skeleton · You do the soul</div>
+            <!-- ── Status bar ── -->
+            <div class="p-statusbar status-bar">
+                <span class="status-brand">AMBAR</span>
+                <span class="status-sep">·</span>
+                <span class="statusbar-text status-text" id="statusBarText">READY</span>
+                <div class="statusbar-track status-line">
+                    <div class="statusbar-fill" id="statusBarFill"></div>
+                    <div class="status-line-fill"></div>
+                </div>
+                <span class="status-seq" id="statusSeqName">–</span>
             </div>
 
-        </div><!-- /panel-settings -->
+        </div><!-- /p-main -->
 
-    </div><!-- /p-body -->
-
-    <!-- ── Loading bar (shown during analysis) ── -->
-    <div id="loadingIndicator" class="loading-overlay" style="display:none">
-        <div class="scanner-box">
-            <div class="scanner-bar"></div>
-        </div>
-        <div class="loading-text" id="loadingText">Analyzing…</div>
-    </div>
-
-    <!-- ── Error bar ── -->
-    <div id="errorMessage" class="error-bar" style="display:none">
-        <span class="error-icon">⚠</span>
-        <span id="errorText" class="error-text"></span>
-        <button class="close-btn" onclick="document.getElementById('errorMessage').style.display='none'">✕</button>
-    </div>
-
-    <!-- ── Footer ── -->
-    <div class="p-foot">
-        <span>AMBAR</span>
-        <div class="p-foot-spacer"></div>
-        <span id="headerSub" style="color:var(--text-4)">Premiere Pro · AI Editor</span>
-    </div>
+    </div><!-- /p-layout -->
 
 </div><!-- /panel -->
 
@@ -410,6 +537,7 @@
 <script src="js/utils/error-handler.js"></script>
 <script src="js/utils/validators.js"></script>
 <script src="js/utils/capabilities.js"></script>
+<script src="js/core/project-memory.js"></script>
 <script src="js/core/cep-bridge.js"></script>
 <script src="js/core/audio-analyzer.js"></script>
 <script src="js/core/frame-extractor.js"></script>
@@ -423,6 +551,7 @@
 <script src="js/ai/ai-service.js"></script>
 <script src="js/core/timeline-editor.js"></script>
 <script src="js/core/broll-placer.js"></script>
+<script src="js/core/caption-engine.js"></script>
 <script src="js/ui/ui-state.js"></script>
 <script src="js/ui/ui-controller.js"></script>
 <script src="js/index.js"></script>

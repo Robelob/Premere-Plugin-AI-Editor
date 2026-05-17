@@ -5,7 +5,7 @@ const CONSTANTS = {
     FEATURES: {
         SILENCE_REMOVAL: true,
         BROLL_DETECTION: true,
-        AUTO_CAPTIONING: false,
+        AUTO_CAPTIONING: true,
         UNDO_REDO: false,
         BATCH_OPERATIONS: true,
     },
@@ -95,9 +95,21 @@ const CONSTANTS = {
         BRIDGE_MISSING: 'CEP Bridge not found. Please ensure the bridge panel is installed. See README for instructions.',
     },
 
+    // Caption generation
+    CAPTION_TEMPLATES: {
+        'minimal':        { type: 'srt',   style: 'minimal' },
+        'box':            { type: 'srt',   style: 'box' },
+        'underline':      { type: 'srt',   style: 'underline' },
+        'highlight-word': { type: 'mogrt', style: 'word-highlight' },
+        'spaced':         { type: 'srt',   style: 'spaced' },
+        'custom':         { type: 'mogrt', style: 'custom' },
+    },
+    CAPTIONS_MAX_WORDS_PER_LINE: 6,
+    CAPTIONS_MAX_CHARS_PER_LINE: 42,
+
     // Plugin name and version
     NAME: 'Ambar',
-    VERSION: '0.1.0',
+    VERSION: '0.2.0',
 };
 
 // Export for use in other modules

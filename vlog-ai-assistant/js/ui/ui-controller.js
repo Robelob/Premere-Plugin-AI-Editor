@@ -3,100 +3,99 @@
 const UIController = {
 
     _pollInterval:    null,
-    _pendingEditPlan: null,   // holds parseEditPlan() result between Analyze and Commit steps
+    _pendingEditPlan: null,
+    _captionTemplate: 'minimal',
+    _mogrtPath:       null,
 
     init() {
         Logger.info('Initializing UI Controller');
-        
-        // Log startup diagnostics to show what APIs are available
+
         if (typeof Capabilities !== 'undefined') {
             Capabilities.detectSync();
             Capabilities.logDiagnostics();
-            // Detect CEP Bridge availability asynchronously (non-blocking)
             Capabilities.detectCEPBridge().then(function() {
                 Logger.info('[Capabilities] CEP Bridge detection complete');
             }).catch(function(e) {
                 Logger.debug('[Capabilities] CEP Bridge detection error: ' + e.message);
             });
         }
-        
+
         this.restoreSettings();
         this._initAIService();
         this._updateProviderUI(this._getProvider());
-        this.updateStatus('ready', 'READY');
-        this._initRangeDisplays();
+        this._updateStatusBar('Ready', 0);
         this._setupEventBasedDetection();
         this.refreshSequences();
-        this._checkReadyToAnalyze();
         this._startSequencePoll();
     },
 
-    _initRangeDisplays() {
-        var ranges = document.querySelectorAll('input[type="range"]');
-        for (var i = 0; i < ranges.length; i++) {
-            var el = ranges[i];
-            var unit = el.id === 'silenceThreshold' ? ' dB'
-                     : el.id === 'minSilenceDuration' ? ' ms' : '';
-            this.updateRangeDisplay(el.id, el.value, unit);
-        }
+    // ── Sidebar navigation ────────────────────────────────────────────
+
+    switchPanel(panelName) {
+        document.querySelectorAll('.nav-btn, .sidebar-btn').forEach(function(btn) {
+            btn.classList.toggle('active', btn.dataset.panel === panelName);
+        });
+        document.querySelectorAll('.panel-content').forEach(function(panel) {
+            panel.classList.toggle('active', panel.id === 'panel-' + panelName);
+        });
     },
+
+    // ── Sequence detection ────────────────────────────────────────────
 
     _setupEventBasedDetection() {
         if (!PremiereAPI.isAvailable()) return;
         var self = this;
         var ok = PremiereAPI.setupEventListeners(async function(sequence) {
-            // UXP proxy properties require await — fetch name and id async
             var seqName = null;
-            var seqId   = null;
             try { seqName = await sequence.name;       } catch (_) {}
-            try { seqId   = await sequence.sequenceID; } catch (_) {}
-            if (!seqName) { try { seqId = await sequence.id; } catch (_) {} }
-
-            Logger.info('UIController: sequence activated — name=' + seqName + ' id=' + (seqId || '?'));
-
-            // Cache the async-resolved values back onto the object for sync use downstream
             try {
                 if (seqName && !sequence._resolvedName) sequence._resolvedName = seqName;
-                if (seqId   && !sequence._resolvedId)   sequence._resolvedId   = seqId;
             } catch (_) {}
 
+            Logger.info('UIController: sequence activated — name=' + seqName);
             self.refreshSequences();
-            self._checkReadyToAnalyze();
-            self.updateStatus('ready', 'READY · ' + (seqName || 'Sequence detected'));
+
+            if (typeof ProjectMemory !== 'undefined') {
+                try {
+                    var seqId = null;
+                    try { seqId = await sequence.sequenceID; } catch (_) {}
+                    if (!seqId) seqId = seqName || 'default';
+                    var memState = await ProjectMemory.init(seqId);
+                    self._updateMemoryUI(memState);
+                } catch (memErr) {
+                    Logger.warn('[Memory] Init failed: ' + memErr.message);
+                }
+            }
         });
         if (ok) Logger.info('Event-based sequence detection armed');
-        else Logger.warn('Event-based detection unavailable — relying on poll');
+        else    Logger.warn('Event-based detection unavailable — relying on poll');
     },
 
     _startSequencePoll() {
         if (this._pollInterval) return;
         var self = this;
         var pollCount = 0;
-        // Poll every 10 seconds — catches when user opens a sequence in PPro timeline
         this._pollInterval = setInterval(function() {
             try {
                 var select = document.getElementById('sequenceSelect');
                 if (!select) return;
-                var currentVal = select.value;
-                var hasSeq = currentVal && currentVal !== '' && select.options.length >= 1;
-                if (hasSeq) return; // already have a sequence, stop polling silently
+                var hasSeq = select.value && select.value !== '' && select.options.length >= 1;
+                if (hasSeq) return;
 
                 pollCount++;
-                // Every 6th poll (60 seconds), try the async method as it might work
                 if (pollCount % 6 === 0) {
                     PremiereAPI.getActiveSequenceAsync().then(function(seq) {
                         if (seq) self.refreshSequences();
                     }).catch(function() {});
                 }
 
-                // Try sync refresh — no warn logging since it's expected to fail
                 var active = PremiereAPI.getActiveSequence();
                 if (active) self.refreshSequences();
             } catch (e) { /* silent */ }
         }, 10000);
     },
 
-    // ── Internal helpers ─────────────────────────────────────────────
+    // ── Internal helpers ──────────────────────────────────────────────
 
     _getApiKey() {
         const el = document.getElementById('apiKeyInput');
@@ -117,62 +116,47 @@ const UIController = {
         });
     },
 
-    // ── Tab switching ─────────────────────────────────────────────────
-
-    switchTab(tabName) {
-        document.querySelectorAll('.tab-btn').forEach(btn => {
-            btn.classList.toggle('active', btn.dataset.tab === tabName);
-        });
-        document.querySelectorAll('.panel-content').forEach(panel => {
-            panel.classList.toggle('active', panel.id === 'panel-' + tabName);
-        });
-    },
-
     // ── Sequence selector ─────────────────────────────────────────────
 
     refreshSequences() {
         const select = document.getElementById('sequenceSelect');
         if (!select) return;
 
-        // ── Diagnostic checks before calling the API ──────────────────
         if (!PremiereAPI.isAvailable()) {
             select.innerHTML = '<option value="">── Load plugin inside Premiere Pro ──</option>';
-            this.updateStatus('error', 'NO PREMIERE CONTEXT');
-            Logger.warn('premierepro module unavailable — not running inside Premiere Pro');
+            this._updateTopbarPill(null);
+            Logger.warn('premierepro module unavailable');
             return;
         }
 
         if (!PremiereAPI.getActiveProject()) {
             select.innerHTML = '<option value="">── No project open ──</option>';
-            this.updateStatus('ready', 'OPEN A PROJECT');
-            Logger.warn('No active project — open a Premiere project first');
+            this._updateTopbarPill(null);
             return;
         }
 
-        // ── Load sequences ────────────────────────────────────────────
         try {
             const sequences = PremiereAPI.getAllSequences();
             select.innerHTML = '';
 
             if (sequences.length === 0) {
                 select.innerHTML = '<option value="">── No sequence detected ──</option>';
-                this.updateStatus('ready', 'OPEN A SEQUENCE');
+                this._updateTopbarPill(null);
                 const hint = document.getElementById('seqHint');
                 if (hint) hint.style.display = 'block';
-                Logger.warn('No sequences found — trying active sequence on analysis');
                 return;
             }
+
             const hint = document.getElementById('seqHint');
             if (hint) hint.style.display = 'none';
 
-            sequences.forEach(s => {
+            sequences.forEach(function(s) {
                 const opt = document.createElement('option');
                 opt.value = s.id;
                 opt.textContent = s.name;
                 select.appendChild(opt);
             });
 
-            // Pre-select the currently active sequence in Premiere
             let selectedId = null;
             try {
                 const active = PremiereAPI.getActiveSequence();
@@ -187,12 +171,108 @@ const UIController = {
             }
 
             UIState.setState('selectedSequenceId', selectedId);
-            this.updateStatus('ready', 'READY');
+
+            // Update topbar pill with sequence name
+            const selectedSeq = sequences.find(function(s) { return s.id === selectedId; });
+            this._updateTopbarPill(selectedSeq ? selectedSeq.name : sequences[0].name);
             Logger.info('Loaded ' + sequences.length + ' sequence(s), selected: ' + selectedId);
         } catch (e) {
             Logger.error('Error refreshing sequences', e);
-            select.innerHTML = '<option value="">── Error — check DevTools console ──</option>';
+            this._updateTopbarPill(null);
         }
+    },
+
+    _updateTopbarPill(seqName) {
+        const dot      = document.getElementById('seqDot');
+        const nameEl   = document.getElementById('seqName');
+        const durEl    = document.getElementById('seqDuration');
+        const seqSpan  = document.getElementById('statusSeqName');
+
+        if (!nameEl) return;
+
+        if (seqName) {
+            nameEl.textContent = seqName;
+            if (dot) dot.classList.add('connected');
+            if (seqSpan) seqSpan.textContent = seqName;
+        } else {
+            nameEl.textContent = 'No sequence';
+            if (dot) dot.classList.remove('connected');
+            if (durEl) durEl.textContent = '';
+            if (seqSpan) seqSpan.textContent = '–';
+        }
+    },
+
+    _updateMemoryUI(state) {
+        if (!state) return;
+        var self = this;
+
+        // Update sequence ID in memory panel header
+        var seqIdEl = document.getElementById('memSeqId');
+        if (seqIdEl && state.sequenceId) seqIdEl.textContent = state.sequenceId;
+
+        // Row definitions: key → { dotId, statusId, done, statusText }
+        var rows = [
+            {
+                dotId:    'memDot-edit',
+                statusId: 'memStatus-edit',
+                done:     !!state.analysisDone,
+                text:     state.analysisDone
+                    ? (state.cutsApplied || []).length + ' cuts · ' + self._timeAgo(state.lastAnalyzed)
+                    : 'not run',
+            },
+            {
+                dotId:    'memDot-broll',
+                statusId: 'memStatus-broll',
+                done:     !!state.brollDone,
+                text:     state.brollDone
+                    ? (state.brollPlacements || []).length + ' placements'
+                    : 'not run',
+            },
+            {
+                dotId:    'memDot-captions',
+                statusId: 'memStatus-captions',
+                done:     !!state.captionsDone,
+                text:     state.captionsDone
+                    ? (state.captionLines || 0) + ' lines'
+                    : 'not run',
+            },
+            {
+                dotId:    'memDot-organise',
+                statusId: 'memStatus-organise',
+                done:     !!state.organiseDone,
+                text:     state.organiseDone ? 'organized' : 'not run',
+            },
+        ];
+
+        rows.forEach(function(row) {
+            var dot    = document.getElementById(row.dotId);
+            var status = document.getElementById(row.statusId);
+            if (dot)    dot.className = 'mem-dot' + (row.done ? ' green' : '');
+            if (status) status.textContent = row.text;
+        });
+
+        // New footage row — show/hide
+        var footageRow = document.getElementById('memRow-footage');
+        if (footageRow) {
+            if (state.newFootageDetected) {
+                footageRow.style.display = '';
+                var footageDot    = document.getElementById('memDot-footage');
+                var footageStatus = document.getElementById('memStatus-footage');
+                if (footageDot)    footageDot.className = 'mem-dot amber';
+                if (footageStatus) footageStatus.textContent =
+                    (state.newClipCount || '?') + ' new clip(s)';
+            } else {
+                footageRow.style.display = 'none';
+            }
+        }
+    },
+
+    _timeAgo(isoString) {
+        if (!isoString) return 'unknown';
+        var mins = Math.round((Date.now() - new Date(isoString).getTime()) / 60000);
+        if (mins < 1) return 'just now';
+        if (mins < 60) return mins + ' min ago';
+        return Math.round(mins / 60) + ' hr ago';
     },
 
     onSequenceChange() {
@@ -205,32 +285,22 @@ const UIController = {
         const seq = PremiereAPI.getSequenceById(sequenceId);
         if (seq) {
             PremiereAPI.openSequence(seq);
-            this.updateStatus('ready', 'READY · ' + seq.name);
+            this._updateTopbarPill(seq.name);
         }
     },
 
-    // ── Range input display ───────────────────────────────────────────
+    // ── Status bar ────────────────────────────────────────────────────
 
-    updateRangeDisplay(id, value, unit) {
-        const display = document.getElementById(id + '-val');
-        if (!display) return;
-        const num = parseFloat(value);
-        const formatted = (unit === '') ? num.toFixed(2) : Math.round(num);
-        display.textContent = formatted + unit;
-        // Update filled-track percentage for Ambar range CSS (--pct custom prop)
-        const rangeEl = document.getElementById(id);
-        if (rangeEl && rangeEl.type === 'range') {
-            const min = parseFloat(rangeEl.min) || 0;
-            const max = parseFloat(rangeEl.max) || 100;
-            const pct = ((num - min) / (max - min)) * 100;
-            rangeEl.style.setProperty('--pct', pct.toFixed(1) + '%');
-        }
+    _updateStatusBar(text, pct) {
+        const textEl = document.getElementById('statusBarText');
+        const fill   = document.getElementById('statusBarFill');
+        if (textEl) textEl.textContent = text || 'Ready';
+        if (fill)   fill.style.width   = Math.max(0, Math.min(100, pct || 0)) + '%';
     },
 
     // ── Provider / model / API key ────────────────────────────────────
 
     _getProvider() {
-        // CONSTANTS is primary source of truth; UI/localStorage are secondary
         if (CONSTANTS.AI_PROVIDER && CONSTANTS.AI_PROVIDER !== '') {
             return CONSTANTS.AI_PROVIDER;
         }
@@ -239,7 +309,6 @@ const UIController = {
     },
 
     _getModel() {
-        // CONSTANTS is primary source of truth; UI/localStorage are secondary
         if (CONSTANTS.AI_MODEL && CONSTANTS.AI_MODEL !== '') {
             return CONSTANTS.AI_MODEL;
         }
@@ -261,6 +330,22 @@ const UIController = {
         AIService.model = model;
     },
 
+    onWhisperProviderChange() {
+        const el = document.getElementById('whisperProvider');
+        if (el) {
+            CONSTANTS.WHISPER_PROVIDER = el.value;
+            UIState.updateSetting('whisperProvider', el.value);
+        }
+    },
+
+    onVisionModelChange() {
+        const el = document.getElementById('visionModel');
+        if (el) {
+            CONSTANTS.VISION_MODEL = el.value;
+            UIState.updateSetting('visionModel', el.value);
+        }
+    },
+
     _updateProviderUI(provider) {
         var PROVIDERS_LOCAL = {
             'gemini':            { keyHint: 'Free key → aistudio.google.com',              keyPlaceholder: 'AIzaSy…',              defaultModel: 'gemini-2.0-flash',          needsKey: true,  needsUrl: false },
@@ -269,20 +354,17 @@ const UIController = {
             'ollama':            { keyHint: 'No key needed — runs locally (ollama.com)',   keyPlaceholder: '(not required)',       defaultModel: 'llama3.2',                  needsKey: false, needsUrl: true  },
             'openai-compatible': { keyHint: 'API key for your endpoint (optional for local)', keyPlaceholder: 'sk-… or leave blank', defaultModel: 'llama3.2',                  needsKey: true,  needsUrl: true  },
         };
-        var cfg = PROVIDERS_LOCAL[provider] || PROVIDERS_LOCAL['ollama'];
+        var cfg    = PROVIDERS_LOCAL[provider] || PROVIDERS_LOCAL['ollama'];
         var hintEl = document.getElementById('apiKeyHint');
         var phEl   = document.getElementById('apiKeyInput');
         var defEl  = document.getElementById('modelDefault');
         var grpEl  = document.getElementById('apiKeyGroup');
         var urlGrp = document.getElementById('baseUrlGroup');
-        if (hintEl) hintEl.textContent  = cfg.keyHint;
-        if (phEl)   phEl.placeholder    = cfg.keyPlaceholder;
-        if (defEl)  defEl.textContent   = '(default: ' + cfg.defaultModel + ')';
-        if (grpEl)  grpEl.style.display = cfg.needsKey ? '' : 'none';
+        if (hintEl) hintEl.textContent   = cfg.keyHint;
+        if (phEl)   phEl.placeholder     = cfg.keyPlaceholder;
+        if (defEl)  defEl.textContent    = '(default: ' + cfg.defaultModel + ')';
+        if (grpEl)  grpEl.style.display  = cfg.needsKey ? '' : 'none';
         if (urlGrp) urlGrp.style.display = cfg.needsUrl ? '' : 'none';
-        var labels = { gemini: 'Gemini', openai: 'OpenAI', anthropic: 'Claude', ollama: 'Ollama', 'openai-compatible': 'Custom AI' };
-        var sub = document.getElementById('headerSub');
-        if (sub) sub.textContent = 'Premiere Pro · ' + (labels[provider] || 'AI');
     },
 
     onApiKeyInput() {
@@ -290,207 +372,20 @@ const UIController = {
         this._initAIService();
     },
 
-    // ── FCPXML / SRT file loading ─────────────────────────────────────
-
-    // Opens the OS file picker via UXP storage API (works inside Premiere).
-    // Falls back to a programmatic <input type="file"> for browser testing.
-    openFcpxmlPicker: async function() {
-        var self = this;
-        try {
-            var result = await this._openFilePicker(['fcpxml', 'xml']);
-            if (result) self._processFcpxmlContent(result.name, result.content);
-        } catch (e) {
-            self.showError('Could not open file: ' + e.message);
-        }
-    },
-
-    openAudioPicker: async function() {
-        var self = this;
-        try {
-            var types = ['mp3', 'm4a', 'wav', 'aac', 'mp4', 'mov', 'mxf', 'webm'];
-            var result = await this._openFilePicker(types, true); // binaryMode = path only
-            if (result) self._processAudioFile(result.name, result.nativePath || result.path || result.name);
-        } catch (e) {
-            self.showError('Could not open file: ' + e.message);
-        }
-    },
-
-    onAudioDrop: async function(event) {
-        event.preventDefault();
-        event.stopPropagation();
-        var zone = document.getElementById('audioFileZone');
-        if (zone) zone.classList.remove('drag-over');
-        var file = this._getDroppedFile(event);
-        if (!file) { this.showError('No file received — try using the file picker instead.'); return; }
-        // Use nativePath if available (UXP), otherwise name
-        this._processAudioFile(file.name, file.nativePath || file.path || null);
-    },
-
-    _processAudioFile: function(name, nativePath) {
-        var zone     = document.getElementById('audioFileZone');
-        var label    = document.getElementById('audioLabel');
-        var sub      = document.getElementById('audioSub');
-        var filename = document.getElementById('audioFilename');
-        var icon     = document.getElementById('audioIcon');
-
-        UIState.setState('audioFilePath', nativePath || name);
-
-        if (zone)     { zone.classList.add('loaded'); }
-        if (icon)     { icon.textContent = '✅'; }
-        if (label)    { label.textContent = name; }
-        if (sub)      { sub.style.display = 'none'; }
-        if (filename) { filename.textContent = nativePath || name; filename.style.display = 'block'; }
-
-        Logger.info('Audio override selected: ' + (nativePath || name));
-        this._checkReadyToAnalyze();
-    },
-
-    openSrtPicker: async function() {
-        var self = this;
-        try {
-            var result = await this._openFilePicker(['srt', 'txt']);
-            if (result) self._processSrtContent(result.name, result.content);
-        } catch (e) {
-            self.showError('Could not open file: ' + e.message);
-        }
-    },
-
-    // Drag-and-drop handlers
-    onFcpxmlDrop: async function(event) {
-        event.preventDefault();
-        event.stopPropagation();
-        var zone = document.getElementById('fcpxmlDropZone');
-        if (zone) zone.classList.remove('drag-over');
-
-        var file = this._getDroppedFile(event);
-        if (!file) { this.showError('No file received — try using the file picker instead.'); return; }
-        Logger.info('FCPXML drop: name=' + file.name + ' size=' + (file.size || '?'));
-
-        try {
-            var content = await this._readFileAsText(file);
-            this._processFcpxmlContent(file.name, content);
-        } catch (e) {
-            this.showError('Could not read file: ' + e.message);
-        }
-    },
-
-    onSrtDrop: async function(event) {
-        event.preventDefault();
-        event.stopPropagation();
-        var zone = document.getElementById('srtDropZone');
-        if (zone) zone.classList.remove('drag-over');
-
-        var file = this._getDroppedFile(event);
-        if (!file) { this.showError('No file received — try using the file picker instead.'); return; }
-        Logger.info('SRT drop: name=' + file.name + ' size=' + (file.size || '?'));
-
-        try {
-            var content = await this._readFileAsText(file);
-            this._processSrtContent(file.name, content);
-        } catch (e) {
-            this.showError('Could not read file: ' + e.message);
-        }
-    },
-
-    // Extract the first file from a drop event — checks both .files and .items
-    _getDroppedFile: function(event) {
-        var dt = event.dataTransfer;
-        if (!dt) return null;
-        // Standard files array
-        if (dt.files && dt.files.length > 0) return dt.files[0];
-        // items API (some UXP versions)
-        if (dt.items && dt.items.length > 0) {
-            var item = dt.items[0];
-            if (item.kind === 'file') return item.getAsFile();
-        }
-        return null;
-    },
-
-    // Core processor — takes file name + text content (from any source)
-    _processFcpxmlContent: function(name, content) {
-        var self = this;
-        var zone     = document.getElementById('fcpxmlDropZone');
-        var label    = document.getElementById('fcpxmlLabel');
-        var sub      = document.getElementById('fcpxmlSub');
-        var filename = document.getElementById('fcpxmlFilename');
-        var icon     = document.getElementById('fcpxmlIcon');
-
-        try {
-            var parsed = FCPXMLParser.parse(content);
-            UIState.setState('fcpxmlParsed', parsed);
-            UIState.setState('fcpxmlRaw', content); // keep raw XML for export
-
-            if (zone)     { zone.classList.add('loaded'); }
-            if (icon)     { icon.textContent = '✅'; }
-            if (label)    { label.textContent = parsed.sequenceName || 'Sequence loaded'; }
-            if (sub)      { sub.style.display = 'none'; }
-            if (filename) { filename.textContent = name; filename.style.display = 'block'; }
-
-            Logger.info('FCPXML: ' + parsed.sequenceName +
-                ' | ' + parsed.clips.length + ' clips | ' +
-                FCPXMLParser.formatDuration(parsed.duration));
-
-            self._updateSummaryCard();
-            self._checkReadyToAnalyze();
-
-        } catch (e) {
-            Logger.error('FCPXML parse error', e);
-            if (zone)     { zone.classList.remove('loaded'); }
-            if (icon)     { icon.textContent = '❌'; }
-            if (label)    { label.textContent = 'Invalid FCPXML file'; }
-            if (sub)      { sub.textContent = e.message; sub.style.display = 'block'; }
-            self.showError('FCPXML parse error: ' + e.message);
-        }
-    },
-
-    _processSrtContent: function(name, content) {
-        var self = this;
-        var zone     = document.getElementById('srtDropZone');
-        var label    = document.getElementById('srtLabel');
-        var sub      = document.getElementById('srtSub');
-        var filename = document.getElementById('srtFilename');
-        var icon     = document.getElementById('srtIcon');
-
-        try {
-            var parsed = PromptTemplates.parseSrtToTranscript(content);
-            if (!parsed || !parsed.words || parsed.words.length === 0) {
-                throw new Error('No subtitle entries found — is this a valid SRT file?');
-            }
-            // Store in the new format for timeline analysis
-            UIState.setState('srtTranscript', parsed);
-            // Keep legacy key so old code paths don't break
-            var lines = parsed.words;
-            UIState.setState('srtParsed', lines);
-
-            if (zone)     { zone.classList.add('loaded'); }
-            if (icon)     { icon.textContent = '✅'; }
-            if (label)    { label.textContent = lines.length + ' transcript entries loaded'; }
-            if (sub)      { sub.style.display = 'none'; }
-            if (filename) { filename.textContent = name; filename.style.display = 'block'; }
-
-            Logger.info('SRT: ' + lines.length + ' entries loaded for timeline analysis');
-            self._updateSummaryCard();
-            self._checkReadyToAnalyze();
-
-        } catch (e) {
-            Logger.error('SRT parse error', e);
-            if (zone)  { zone.classList.remove('loaded'); }
-            if (icon)  { icon.textContent = '❌'; }
-            if (label) { label.textContent = 'Invalid SRT file'; }
-            if (sub)   { sub.textContent = e.message; sub.style.display = 'block'; }
-            self.showError('SRT parse error: ' + e.message);
-        }
+    toggleApiKeyVisibility() {
+        const input = document.getElementById('apiKeyInput');
+        const btn   = document.getElementById('toggleKeyBtn');
+        if (!input) return;
+        const isHidden = input.type === 'password';
+        input.type = isHidden ? 'text' : 'password';
+        if (btn) btn.textContent = isHidden ? '🙈' : '👁';
     },
 
     // ── File I/O helpers ──────────────────────────────────────────────
 
-    // Opens native OS file picker.
-    // In UXP (Premiere): uses require('uxp').storage.localFileSystem
-    // In browser (dev):  falls back to programmatic <input type="file">
-    _openFilePicker: function(types, binaryMode) {
+    _openFilePicker(types, binaryMode) {
         var self = this;
 
-        // ── UXP path ──────────────────────────────────────────────────
         if (typeof require !== 'undefined') {
             try {
                 var uxpMod  = require('uxp');
@@ -499,58 +394,46 @@ const UIController = {
                 if (lfs && typeof lfs.getFileForOpening === 'function') {
                     return lfs.getFileForOpening({ allowMultiple: false, types: types })
                         .then(function(file) {
-                            if (!file) return null; // user cancelled
-                            // For binary mode (audio/video), return native path only — do not read content
+                            if (!file) return null;
                             if (binaryMode) {
                                 return { name: file.name, nativePath: file.nativePath || null, path: file.nativePath || null };
                             }
                             var fmt = storage.formats && storage.formats.utf8
-                                      ? { format: storage.formats.utf8 }
-                                      : {};
+                                      ? { format: storage.formats.utf8 } : {};
                             return file.read(fmt).then(function(content) {
                                 return { name: file.name, content: String(content), nativePath: file.nativePath || null };
                             });
                         });
                 }
             } catch (e) {
-                Logger.warn('UXP storage unavailable, using browser fallback: ' + e.message);
+                Logger.warn('UXP storage unavailable: ' + e.message);
             }
         }
 
-        // ── Browser / dev fallback ────────────────────────────────────
         return new Promise(function(resolve) {
             var input = document.createElement('input');
             input.type   = 'file';
             input.accept = types.map(function(t) { return '.' + t; }).join(',');
-
             input.onchange = function() {
                 var file = input.files && input.files[0];
                 if (!file) { resolve(null); return; }
                 self._readFileAsText(file).then(function(text) {
                     resolve({ name: file.name, content: text });
-                }).catch(function() {
-                    resolve(null);
-                });
+                }).catch(function() { resolve(null); });
             };
-            // Some browsers need the input in the DOM first
             input.style.display = 'none';
             document.body.appendChild(input);
             input.click();
-            // Clean up after pick
             setTimeout(function() {
                 try { document.body.removeChild(input); } catch (_) {}
             }, 60000);
         });
     },
 
-    // Read file as text — tries multiple APIs for UXP + browser compatibility
     _readFileAsText: async function(file) {
-        // 1) Modern File.text() — works in UXP's Chromium for OS drag-and-drop files
         if (file && typeof file.text === 'function') {
             try { return await file.text(); } catch (_) {}
         }
-
-        // 2) UXP Entry.read() — works if this is a UXP storage Entry (from getFileForOpening)
         if (typeof require !== 'undefined' && file && typeof file.read === 'function') {
             try {
                 var uxpMod  = require('uxp');
@@ -560,22 +443,6 @@ const UIController = {
                 return String(await file.read(fmt));
             } catch (_) {}
         }
-
-        // 3) UXP getEntryForPath — if the file has a nativePath property
-        if (typeof require !== 'undefined' && file && (file.nativePath || file.path)) {
-            try {
-                var uxpMod2  = require('uxp');
-                var storage2 = uxpMod2 && uxpMod2.storage;
-                var lfs2     = storage2 && storage2.localFileSystem;
-                if (lfs2 && typeof lfs2.getEntryForPath === 'function') {
-                    var entry = await lfs2.getEntryForPath(file.nativePath || file.path);
-                    var fmt2  = storage2.formats && storage2.formats.utf8 ? { format: storage2.formats.utf8 } : {};
-                    return String(await entry.read(fmt2));
-                }
-            } catch (_) {}
-        }
-
-        // 4) Classic FileReader — fallback for browser testing
         return new Promise(function(resolve, reject) {
             try {
                 var reader = new FileReader();
@@ -588,360 +455,9 @@ const UIController = {
         });
     },
 
-    // Show sequence summary card using parsed data
-    _updateSummaryCard: function() {
-        var parsed = UIState.getState('fcpxmlParsed');
-        var srt    = UIState.getState('srtParsed');
-        var card   = document.getElementById('sequenceSummary');
-        if (!card) return;
-
-        if (!parsed) { card.classList.remove('visible'); return; }
-
-        // Sequence name
-        var nameEl = document.getElementById('sequenceName');
-        if (nameEl) nameEl.textContent = parsed.sequenceName;
-
-        // Duration
-        var durEl = document.getElementById('statDuration');
-        if (durEl) durEl.textContent = FCPXMLParser.formatDuration(parsed.duration);
-
-        // Total clips
-        var clipsEl = document.getElementById('statClips');
-        if (clipsEl) clipsEl.textContent = parsed.clips.length;
-
-        // Unique tracks used (unique lane count, capped to V1/V2/V3 etc.)
-        var lanes   = {};
-        parsed.clips.forEach(function(c) { lanes[c.lane] = true; });
-        var trackEl = document.getElementById('statTracks');
-        if (trackEl) trackEl.textContent = Object.keys(lanes).length;
-
-        // SRT lines (or FCPXML caption count as fallback)
-        var linesEl = document.getElementById('statLines');
-        if (linesEl) {
-            if (srt && srt.length > 0) {
-                linesEl.textContent = srt.length;
-            } else if (parsed.captions && parsed.captions.length > 0) {
-                linesEl.textContent = parsed.captions.length + '*';
-            } else {
-                linesEl.textContent = '—';
-            }
-        }
-
-        card.classList.add('visible');
-    },
-
-    _checkReadyToAnalyze: function() {
-        var srt         = UIState.getState('srtParsed');
-        var fcpxml      = UIState.getState('fcpxmlParsed');
-        var hasCaptions = fcpxml && fcpxml.captions && fcpxml.captions.length > 0;
-        var hasSequence = !!PremiereAPI.getActiveSequence();
-
-        // New primary workflow (startTimelineAnalysis): active sequence OR SRT loaded.
-        // The actual validation of whether a transcript exists happens at analysis time.
-        var ready = !!(srt || hasSequence || hasCaptions);
-
-        var btn  = document.getElementById('analyzeBtn');
-        var hint = document.getElementById('analyzeBtnHint');
-        if (btn) btn.disabled = !ready;
-        if (hint) {
-            if (!ready) {
-                hint.textContent = 'Open a sequence in Premiere or load an SRT transcript above';
-                hint.style.display = '';
-            } else if (srt && !hasSequence) {
-                hint.textContent = srt.length + ' transcript entries loaded — ready to analyze';
-                hint.style.display = '';
-            } else {
-                hint.style.display = 'none';
-            }
-        }
-    },
-
-    startAnalysis: async function() {
-        var self = this;
-        var fcpxmlParsed = UIState.getState('fcpxmlParsed');
-        var srtParsed    = UIState.getState('srtParsed');
-
-        if (!fcpxmlParsed) {
-            self.showError('Load an FCPXML file first.');
-            return;
-        }
-        var hasCaptions = fcpxmlParsed.captions && fcpxmlParsed.captions.length > 0;
-        if (!srtParsed && !hasCaptions) {
-            self.showError('Load an SRT transcript to enable analysis.');
-            return;
-        }
-
-        var provider = self._getProvider();
-        var apiKey   = self._getApiKey();
-        if (provider !== 'ollama' && provider !== 'openai-compatible' && !apiKey) {
-            self.showError('Add an API key in the Settings tab first.');
-            return;
-        }
-
-        // Switch to Analyze tab and reset
-        self.switchTab('analyze');
-        self._cancelRequested = false;
-
-        var aiLog = document.getElementById('aiLog');
-        if (aiLog) aiLog.textContent = '';
-
-        var cancelBtn  = document.getElementById('cancelAnalysisBtn');
-        var emptyState = document.getElementById('analyzeEmptyState');
-        if (cancelBtn)  cancelBtn.style.display  = '';
-        if (emptyState) emptyState.style.display = 'none';
-
-        self.showLoading('Building analysis…');
-        self.updateStatus('analyzing', 'ANALYZING…');
-
-        // ── Step 1: FCPXML already parsed ────────────────────────────
-        self._setPipelineStep('step-parse-xml', 'done', fcpxmlParsed.clips.length + ' clips');
-
-        // ── Step 2: SRT already parsed ───────────────────────────────
-        if (srtParsed) {
-            self._setPipelineStep('step-parse-srt', 'done', srtParsed.length + ' lines');
-        } else {
-            self._setPipelineStep('step-parse-srt', 'done', fcpxmlParsed.captions.length + ' captions');
-        }
-
-        // ── Step 3: Build prompt, kick off AI ───────────────────────
-        self._setPipelineStep('step-match-broll',    'active', '…');
-        self._setPipelineStep('step-detect-silence', 'active', '…');
-        self._setPipelineStep('step-decisions',      'active', '…');
-
-        var summary;
-        try {
-            summary = FCPXMLParser.buildPromptSummary(fcpxmlParsed, srtParsed || fcpxmlParsed.captions);
-        } catch (e) {
-            self.showError('Could not build prompt: ' + e.message);
-            if (cancelBtn) cancelBtn.style.display = 'none';
-            return;
-        }
-
-        self._appendAiLog('> ' + fcpxmlParsed.sequenceName + ' · ' +
-            (srtParsed ? srtParsed.length + ' SRT lines' : fcpxmlParsed.captions.length + ' captions') +
-            ' · sending to ' + provider + '…\n');
-
-        self._initAIService();
-
-        var response;
-        try {
-            response = await AIService.analyzeSequence(summary);
-        } catch (e) {
-            if (self._cancelRequested) return;
-            self._setPipelineStep('step-match-broll',    'error', 'failed');
-            self._setPipelineStep('step-detect-silence', 'error', 'failed');
-            self._setPipelineStep('step-decisions',      'error', 'failed');
-            self.showError('AI request failed: ' + e.message);
-            if (cancelBtn) cancelBtn.style.display = 'none';
-            return;
-        }
-
-        if (self._cancelRequested) return;
-
-        // Show truncated raw output in AI log
-        var rawText = response.text || '';
-        self._appendAiLog(rawText.slice(0, 1000) +
-            (rawText.length > 1000 ? '\n[…' + (rawText.length - 1000) + ' chars truncated]' : ''));
-
-        self._setPipelineStep('step-match-broll',    'done', '✓');
-        self._setPipelineStep('step-detect-silence', 'done', '✓');
-
-        // ── Parse decisions ──────────────────────────────────────────
-        var result = ResponseParser.parseEditDecisions(response);
-        if (!result || !result.decisions.length) {
-            self._setPipelineStep('step-decisions', 'error', 'parse failed');
-            self.showError('Could not parse AI response. Check the AI Output log.');
-            if (cancelBtn) cancelBtn.style.display = 'none';
-            return;
-        }
-
-        // Drop decisions outside the sequence duration (e.g. AI outputs 1.36 for [1:36] instead of 96.0)
-        var seqDuration = fcpxmlParsed.duration;
-        var inRange = result.decisions.filter(function(d) {
-            return d.timelineOffset >= 0 && d.timelineOffset < seqDuration;
-        });
-        var dropped = result.decisions.length - inRange.length;
-        if (dropped > 0) {
-            self._appendAiLog('\n[Dropped ' + dropped + ' decision(s) with timelineOffset outside 0–' +
-                seqDuration.toFixed(1) + 's — AI likely misread [M:SS] timestamps]');
-            result.decisions = inRange;
-            result.counts = { cut: 0, broll: 0, story: 0 };
-            result.decisions.forEach(function(d) {
-                if (result.counts[d.type] !== undefined) result.counts[d.type]++;
-            });
-        }
-
-        // Warn if all remaining decisions cluster in the first 5% of the timeline
-        if (result.decisions.length > 0 && seqDuration > 10) {
-            var boundary = seqDuration * 0.05;
-            var allClustered = result.decisions.every(function(d) { return d.timelineOffset < boundary; });
-            if (allClustered) {
-                self._appendAiLog('\n⚠ All decisions are within the first ' + boundary.toFixed(1) +
-                    's of a ' + seqDuration.toFixed(1) + 's sequence — AI may have misread [M:SS] as decimal seconds.');
-            }
-        }
-
-        if (!result.decisions.length) {
-            self._setPipelineStep('step-decisions', 'error', 'all out of range');
-            self.showError('All AI decisions were out of range. The AI may have misread timestamps — try again.');
-            if (cancelBtn) cancelBtn.style.display = 'none';
-            return;
-        }
-
-        self._setPipelineStep('step-decisions', 'done', result.decisions.length + ' decisions');
-
-        // Store with pending status
-        UIState.setState('editDecisions', result.decisions.map(function(d) {
-            return { type: d.type, description: d.description || '', timelineOffset: d.timelineOffset,
-                     duration: d.duration || 0, confidence: d.confidence, reason: d.reason || '',
-                     status: 'pending' };
-        }));
-
-        // ── Populate Review tab ──────────────────────────────────────
-        self._renderDecisions(result);
-        self._updateReviewBadge(result.decisions.length);
-
-        self.hideLoading();
-        if (cancelBtn) cancelBtn.style.display = 'none';
-        self.updateStatus('success', 'DONE · ' + result.decisions.length + ' decisions');
-
-        // Auto-switch to Review tab
-        self.switchTab('review');
-        Logger.info('Analysis complete: ' + result.decisions.length + ' decisions');
-    },
-
-    cancelAnalysis: function() {
-        this._cancelRequested = true;
-        this.hideLoading();
-        var cancelBtn = document.getElementById('cancelAnalysisBtn');
-        if (cancelBtn) cancelBtn.style.display = 'none';
-        this.updateStatus('ready', 'CANCELLED');
-        ['step-parse-xml','step-parse-srt','step-match-broll','step-detect-silence','step-decisions'].forEach(function(id) {
-            var el = document.getElementById(id);
-            if (el && !el.classList.contains('done')) el.className = 'pipeline-step pending';
-            var st = document.getElementById(id + '-status');
-            if (st && st.textContent === '…') st.textContent = '—';
-        });
-        Logger.info('Analysis cancelled');
-    },
-
-    exportModifiedXml: async function() {
-        var self       = this;
-        var decisions  = UIState.getState('editDecisions') || [];
-        var approved   = decisions.filter(function(d) { return d.status === 'approved'; });
-
-        if (approved.length === 0) {
-            self.showError('Approve at least one decision before exporting.');
-            return;
-        }
-
-        var rawXml     = UIState.getState('fcpxmlRaw');
-        var parsedData = UIState.getState('fcpxmlParsed');
-        if (!rawXml || !parsedData) {
-            self.showError('Original XML not available — reimport the file and run analysis again.');
-            return;
-        }
-
-        // Premiere exports XMEML (.xml); FCP X uses FCPXML (.fcpxml).
-        // The output extension must match the input so Premiere can re-import it.
-        var isXmeml        = rawXml.indexOf('<xmeml') !== -1;
-        var ext            = isXmeml ? 'xml' : 'fcpxml';
-        var exportFilename = 'ambar-export.' + ext;
-        Logger.info('Export: format=' + (isXmeml ? 'XMEML' : 'FCPXML') + ' file=' + exportFilename);
-
-        self.showLoading('Applying edits…');
-        try {
-            var modified = FCPXMLEditor.applyDecisions(rawXml, parsedData, approved);
-
-            var cuts  = approved.filter(function(d) { return d.type === 'cut';   }).length;
-            var broll = approved.filter(function(d) { return d.type === 'broll'; }).length;
-            var story = approved.filter(function(d) { return d.type === 'story'; }).length;
-            var parts = [];
-            if (cuts)  parts.push(cuts  + ' cut'  + (cuts  !== 1 ? 's' : ''));
-            if (broll) parts.push(broll + ' B-roll');
-            if (story) parts.push(story + ' story marker' + (story !== 1 ? 's' : ''));
-
-            // Attempt 1: auto-save to UXP temp folder (no dialog) → auto-import
-            if (PremiereAPI.isAvailable()) {
-                var tempResult = await self._saveTempFile(modified, exportFilename);
-                if (tempResult && tempResult.nativePath) {
-                    self.showLoading('Importing into Premiere…');
-                    var autoImported = await PremiereAPI.importFile(tempResult.nativePath);
-                    self.hideLoading();
-                    if (autoImported) {
-                        self.updateStatus('success', 'DONE · ' + parts.join(' · '));
-                        setTimeout(function() { self.updateStatus('ready', 'READY'); }, 6000);
-                        return;
-                    }
-                }
-            }
-
-            // Attempt 2: Save dialog → auto-import from the chosen path
-            var saveResult = await self._saveFile(modified, exportFilename, ext);
-            self.hideLoading();
-            if (!saveResult) return; // user cancelled
-
-            self.updateStatus('success', 'EXPORTED · ' + parts.join(' · '));
-
-            if (saveResult.nativePath && PremiereAPI.isAvailable()) {
-                self.showLoading('Importing into Premiere…');
-                var imported = await PremiereAPI.importFile(saveResult.nativePath);
-                self.hideLoading();
-                if (imported) {
-                    self.updateStatus('success', 'IMPORTED · ' + parts.join(' · '));
-                } else {
-                    self.updateStatus('success', 'SAVED · ' + parts.join(' · '));
-                    self.showError('File saved. To apply: File → Import → select the .' + ext + ' file.');
-                }
-            }
-
-            setTimeout(function() { self.updateStatus('ready', 'READY'); }, 6000);
-        } catch (e) {
-            self.hideLoading();
-            self.showError('Export failed: ' + e.message);
-        }
-    },
-
-    // Auto-save to UXP temp/data folder without showing a Save dialog.
-    // Returns { name, nativePath } on success, null if unavailable.
-    _saveTempFile: async function(content, filename) {
-        if (typeof require === 'undefined') return null;
-        try {
-            var uxpMod  = require('uxp');
-            var storage = uxpMod && uxpMod.storage;
-            var lfs     = storage && storage.localFileSystem;
-            if (!lfs) return null;
-
-            var folder = null;
-            if (typeof lfs.getTemporaryFolder === 'function') {
-                try { folder = await lfs.getTemporaryFolder(); } catch (_) {}
-            }
-            if (!folder && typeof lfs.getDataFolder === 'function') {
-                try { folder = await lfs.getDataFolder(); } catch (_) {}
-            }
-            if (!folder) return null;
-
-            var file = await folder.createFile(filename, { overwrite: true });
-            if (!file) return null;
-
-            var fmt = storage.formats && storage.formats.utf8 ? { format: storage.formats.utf8 } : {};
-            await file.write(content, fmt);
-            Logger.info('Temp save: ' + (file.nativePath || file.name));
-            return { name: file.name, nativePath: file.nativePath || null };
-        } catch (e) {
-            Logger.debug('_saveTempFile failed: ' + e.message);
-            return null;
-        }
-    },
-
-    // Save a string as a file — UXP storage API with browser download fallback.
-    // ext: 'xml' for XMEML, 'fcpxml' for FCPXML (controls the Save dialog filter).
-    // Returns { name, nativePath } on success, null if user cancelled.
     _saveFile: async function(content, filename, ext) {
-        var self      = this;
-        var fileTypes = (ext === 'xml') ? ['xml'] : ['fcpxml', 'xml'];
+        var fileTypes = [ext || 'srt'];
 
-        // UXP path — opens native Save As dialog
         if (typeof require !== 'undefined') {
             try {
                 var uxpMod  = require('uxp');
@@ -949,26 +465,24 @@ const UIController = {
                 var lfs     = storage && storage.localFileSystem;
                 if (lfs && typeof lfs.getFileForSaving === 'function') {
                     var file = await lfs.getFileForSaving(filename, { types: fileTypes });
-                    if (!file) return null; // user cancelled
+                    if (!file) return null;
                     var fmt = storage.formats && storage.formats.utf8
                               ? { format: storage.formats.utf8 } : {};
                     await file.write(content, fmt);
-                    Logger.info('Exported: ' + file.name);
+                    Logger.info('Saved: ' + file.name);
                     return { name: file.name, nativePath: file.nativePath || null };
                 }
             } catch (e) {
-                Logger.warn('UXP save failed, trying browser download: ' + e.message);
+                Logger.warn('UXP save failed: ' + e.message);
             }
         }
 
-        // Browser fallback — trigger <a download> click
+        // Browser fallback
         try {
-            var blob = new Blob([content], { type: 'text/xml' });
+            var blob = new Blob([content], { type: 'text/plain' });
             var url  = URL.createObjectURL(blob);
             var a    = document.createElement('a');
-            a.href     = url;
-            a.download = filename;
-            a.style.display = 'none';
+            a.href = url; a.download = filename; a.style.display = 'none';
             document.body.appendChild(a);
             a.click();
             setTimeout(function() {
@@ -980,564 +494,164 @@ const UIController = {
         }
     },
 
-    // ── Pipeline step helper ───────────────────────────────────────────
+    // ── Pipeline step helpers ─────────────────────────────────────────
 
-    _setPipelineStep: function(id, state, statusText) {
-        var el = document.getElementById(id);
-        if (el) el.className = 'pipeline-step ' + state;
-        var st = document.getElementById(id + '-status');
-        if (st) st.textContent = statusText || '';
+    _setStepCard(id, state, subText, badgeText) {
+        var card  = document.getElementById(id);
+        var badge = document.getElementById(id + '-badge');
+        var sub   = document.getElementById(id + '-sub');
+
+        if (card) {
+            card.className = 'step-card' + (state ? ' ' + state : '');
+        }
+        if (badge) {
+            badge.className = 'step-badge ' + (state || 'waiting');
+            badge.textContent = badgeText ||
+                (state === 'active' ? 'in progress' :
+                 state === 'done'   ? 'done' :
+                 state === 'error'  ? 'error' : 'waiting');
+        }
+        if (sub && subText) sub.textContent = subText;
     },
 
-    _appendAiLog: function(text) {
+    _appendAiLog(text) {
         var log = document.getElementById('aiLog');
         if (!log) return;
+        if (log.style.display === 'none') log.style.display = '';
         log.textContent += text;
         log.scrollTop = log.scrollHeight;
     },
 
-    // ── Review tab rendering ───────────────────────────────────────────
+    _resetEditSteps() {
+        var steps = ['step-silence', 'step-transcribe', 'step-ai-decisions'];
+        var self  = this;
+        steps.forEach(function(id) { self._setStepCard(id, '', '', 'waiting'); });
+        var log = document.getElementById('aiLog');
+        if (log) { log.textContent = ''; log.style.display = 'none'; }
+    },
 
-    _renderDecisions: function(result) {
+    // ── Main analysis flow ────────────────────────────────────────────
+
+    startTimelineAnalysis: async function() {
+        var self     = this;
+        var provider = self._getProvider();
+        var apiKey   = self._getApiKey();
+        var noKeyOk  = provider === 'ollama' || provider === 'openai-compatible';
+
+        if (!noKeyOk && !apiKey) {
+            self.showError('Add an API key in Settings first.');
+            return;
+        }
+
+        self._cancelRequested = false;
+        self._pendingEditPlan = null;
+        self._resetEditSteps();
+        self._initAIService();
+        self.showLoading('Layer 1 — detecting silence…');
+        self._updateStatusBar('Detecting silence…', 10);
+        self._setStepCard('step-silence', 'active');
+
+        try {
+            var srtFallback = UIState.getState('srtTranscript');
+            var result = await TimelineEditor.analyzeSequence(srtFallback);
+
+            if (self._cancelRequested) {
+                self._updateStatusBar('Cancelled', 0);
+                self.hideLoading();
+                return;
+            }
+
+            if (!result.success) {
+                self._setStepCard('step-silence', 'error');
+                self._setStepCard('step-transcribe', 'error');
+                self._setStepCard('step-ai-decisions', 'error');
+                self._updateStatusBar('Analysis failed', 0);
+                self.showError(result.error || 'Analysis failed — check provider settings.');
+                return;
+            }
+
+            // All three layers completed successfully
+            self._setStepCard('step-silence', 'done',
+                (result.silenceMarked || 0) + ' silences', 'done');
+            self._setStepCard('step-transcribe', 'done', '', 'done');
+            self._setStepCard('step-ai-decisions', 'done',
+                result.editPlan ? result.editPlan.segments.length + ' decisions' : '', 'done');
+
+            self._pendingEditPlan = result.editPlan;
+
+            var commitBtn  = document.getElementById('commitEditsBtn');
+            var commitHint = document.getElementById('commitEditsHint');
+            if (commitBtn) commitBtn.disabled = false;
+            if (commitHint) {
+                var n = result.silenceMarked || 0;
+                commitHint.textContent = n + ' silence marker' + (n === 1 ? '' : 's') +
+                    ' placed — review in the timeline, then commit.';
+                commitHint.style.display = '';
+            }
+
+            self._updateStatusBar('Analysis complete — ' + (result.silenceMarked || 0) + ' markers', 100);
+            self.hideLoading();
+            Logger.info('Timeline analysis complete — ' + result.editPlan.segments.length + ' segment(s)');
+        } catch (e) {
+            Logger.error('startTimelineAnalysis: ' + e.message);
+            self._setStepCard('step-silence', 'error');
+            self.showError('Analysis failed: ' + e.message);
+            self._updateStatusBar('Error', 0);
+        }
+    },
+
+    cancelAnalysis: function() {
+        this._cancelRequested = true;
+        this.hideLoading();
+        var cancelBtn = document.getElementById('cancelAnalysisBtn');
+        if (cancelBtn) cancelBtn.style.display = 'none';
+        this._resetEditSteps();
+        this._updateStatusBar('Cancelled', 0);
+        Logger.info('Analysis cancelled');
+    },
+
+    commitEdits: async function() {
         var self = this;
 
-        var statCuts  = document.getElementById('statCuts');
-        var statBroll = document.getElementById('statBroll');
-        var statStory = document.getElementById('statStory');
-        if (statCuts)  statCuts.textContent  = result.counts.cut;
-        if (statBroll) statBroll.textContent = result.counts.broll;
-        if (statStory) statStory.textContent = result.counts.story;
-
-        var summaryEl = document.getElementById('aiSummary');
-        if (summaryEl) summaryEl.textContent = result.summary || '';
-
-        var list = document.getElementById('decisionsList');
-        if (!list) return;
-        list.innerHTML = '';
-
-        // ── Approve All / Reject All bar ──────────────────────────────
-        // UXP blocks onclick in innerHTML — must use createElement + addEventListener
-        var bar = document.createElement('div');
-        bar.style.cssText = 'display:flex;gap:6px;margin-bottom:8px;';
-
-        var approveAllBtn = document.createElement('button');
-        approveAllBtn.className = 'secondary-btn';
-        approveAllBtn.style.cssText = 'font-size:11px;padding:5px 10px;flex:1;';
-        approveAllBtn.textContent = '✓ Approve All';
-        approveAllBtn.addEventListener('click', function() { UIController.approveAll(); });
-        bar.appendChild(approveAllBtn);
-
-        var rejectAllBtn = document.createElement('button');
-        rejectAllBtn.className = 'ghost-btn';
-        rejectAllBtn.style.cssText = 'font-size:11px;padding:5px 10px;flex:1;';
-        rejectAllBtn.textContent = '✕ Reject All';
-        rejectAllBtn.addEventListener('click', function() { UIController.rejectAll(); });
-        bar.appendChild(rejectAllBtn);
-
-        list.appendChild(bar);
-
-        // ── Decision items ─────────────────────────────────────────────
-        result.decisions.forEach(function(d, idx) {
-            var tagClass = d.type === 'cut' ? 'silence' : (d.type === 'broll' ? 'broll' : 'story');
-            var confPct  = Math.round((d.confidence || 0) * 100);
-            var durStr   = d.duration ? ' · ' + d.duration.toFixed(1) + 's' : '';
-
-            // Wrapper
-            var item = document.createElement('div');
-            item.className = 'decision-item';
-            item.id = 'decision-' + idx;
-
-            // ── Main content column ──
-            var main = document.createElement('div');
-            main.className = 'decision-main';
-
-            // Meta row: tag + time + confidence
-            var meta = document.createElement('div');
-            meta.className = 'decision-meta';
-
-            var tag = document.createElement('span');
-            tag.className = 'tag ' + tagClass;
-            tag.textContent = d.type.toUpperCase();
-            meta.appendChild(tag);
-
-            var timeEl = document.createElement('span');
-            timeEl.className = 'decision-time';
-            timeEl.textContent = self._formatTime(d.timelineOffset) + durStr;
-            meta.appendChild(timeEl);
-
-            var badge = document.createElement('span');
-            badge.className = 'badge';
-            badge.textContent = confPct + '%';
-            meta.appendChild(badge);
-
-            main.appendChild(meta);
-
-            var desc = document.createElement('div');
-            desc.className = 'decision-desc';
-            desc.textContent = d.description || '';
-            main.appendChild(desc);
-
-            if (d.reason) {
-                var reason = document.createElement('div');
-                reason.className = 'decision-reason';
-                reason.textContent = d.reason;
-                main.appendChild(reason);
-            }
-
-            item.appendChild(main);
-
-            // ── Approve / Reject buttons ──
-            var actions = document.createElement('div');
-            actions.className = 'decision-actions';
-
-            var approveBtn = document.createElement('button');
-            approveBtn.className = 'decision-approve';
-            approveBtn.id = 'approve-' + idx;
-            approveBtn.title = 'Approve';
-            approveBtn.textContent = '✓';
-            approveBtn.addEventListener('click', (function(i) {
-                return function() { UIController.approveDecision(i); };
-            })(idx));
-            actions.appendChild(approveBtn);
-
-            var rejectBtn = document.createElement('button');
-            rejectBtn.className = 'decision-reject';
-            rejectBtn.id = 'reject-' + idx;
-            rejectBtn.title = 'Reject';
-            rejectBtn.textContent = '✕';
-            rejectBtn.addEventListener('click', (function(i) {
-                return function() { UIController.rejectDecision(i); };
-            })(idx));
-            actions.appendChild(rejectBtn);
-
-            item.appendChild(actions);
-            list.appendChild(item);
-        });
-
-        var resultsEl = document.getElementById('reviewResults');
-        var emptyEl   = document.getElementById('reviewEmptyState');
-        if (resultsEl) resultsEl.style.display = '';
-        if (emptyEl)   emptyEl.style.display   = 'none';
-
-        self._updateExportBtn();
-    },
-
-    // ── Decision approve / reject ─────────────────────────────────────
-
-    approveDecision: function(idx) {
-        var decisions = UIState.getState('editDecisions');
-        if (!decisions || idx < 0 || idx >= decisions.length) return;
-        var d = decisions[idx];
-        // Toggle: clicking approve again reverts to pending
-        d.status = (d.status === 'approved') ? 'pending' : 'approved';
-        this._refreshDecisionItem(idx, d);
-        this._updateExportBtn();
-    },
-
-    rejectDecision: function(idx) {
-        var decisions = UIState.getState('editDecisions');
-        if (!decisions || idx < 0 || idx >= decisions.length) return;
-        var d = decisions[idx];
-        // Toggle: clicking reject again reverts to pending
-        d.status = (d.status === 'rejected') ? 'pending' : 'rejected';
-        this._refreshDecisionItem(idx, d);
-        this._updateExportBtn();
-    },
-
-    // Force all to approved (does not toggle — idempotent)
-    approveAll: function() {
-        var decisions = UIState.getState('editDecisions');
-        if (!decisions) return;
-        for (var i = 0; i < decisions.length; i++) {
-            decisions[i].status = 'approved';
-            this._refreshDecisionItem(i, decisions[i]);
-        }
-        this._updateExportBtn();
-    },
-
-    // Force all to rejected (does not toggle — idempotent)
-    rejectAll: function() {
-        var decisions = UIState.getState('editDecisions');
-        if (!decisions) return;
-        for (var i = 0; i < decisions.length; i++) {
-            decisions[i].status = 'rejected';
-            this._refreshDecisionItem(i, decisions[i]);
-        }
-        this._updateExportBtn();
-    },
-
-    // Update a single decision item's visual state
-    _refreshDecisionItem: function(idx, d) {
-        var item       = document.getElementById('decision-' + idx);
-        var approveBtn = document.getElementById('approve-' + idx);
-        var rejectBtn  = document.getElementById('reject-' + idx);
-
-        if (item) {
-            // Separate calls — UXP's classList.remove() may not support multiple args
-            item.classList.remove('approved');
-            item.classList.remove('rejected');
-            if (d.status === 'approved') item.classList.add('approved');
-            if (d.status === 'rejected') item.classList.add('rejected');
-        }
-        if (approveBtn) {
-            if (d.status === 'approved') approveBtn.classList.add('on');
-            else                         approveBtn.classList.remove('on');
-        }
-        if (rejectBtn) {
-            if (d.status === 'rejected') rejectBtn.classList.add('on');
-            else                         rejectBtn.classList.remove('on');
-        }
-    },
-
-    // Enable / disable Export button based on approved count
-    _updateExportBtn: function() {
-        var decisions = UIState.getState('editDecisions') || [];
-        var approved  = 0;
-        for (var i = 0; i < decisions.length; i++) {
-            if (decisions[i].status === 'approved') approved++;
-        }
-        var btn  = document.getElementById('exportBtn');
-        var hint = document.getElementById('exportHint');
-        if (btn) btn.disabled = (approved === 0);
-        if (hint) {
-            hint.textContent = approved > 0
-                ? approved + ' decision' + (approved === 1 ? '' : 's') + ' approved — ready to export'
-                : 'Approve decisions above to enable export';
-        }
-    },
-
-    _updateReviewBadge: function(count) {
-        var badge = document.getElementById('reviewBadge');
-        var btn   = document.querySelector('[data-tab="review"]');
-        if (badge) { badge.textContent = count; badge.style.display = count > 0 ? '' : 'none'; }
-        if (btn) {
-            if (count > 0) btn.classList.add('has-data');
-            else           btn.classList.remove('has-data');
-        }
-    },
-
-    _formatTime: function(secs) {
-        if (!secs || isNaN(secs)) return '0:00';
-        var m = Math.floor(secs / 60);
-        var s = Math.floor(secs % 60);
-        return m + ':' + (s < 10 ? '0' : '') + s;
-    },
-
-    _escapeHtml: function(str) {
-        return String(str)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;');
-    },
-
-    toggleApiKeyVisibility() {
-        const input = document.getElementById('apiKeyInput');
-        const btn   = document.getElementById('toggleKeyBtn');
-        if (!input) return;
-        const isHidden = input.type === 'password';
-        input.type = isHidden ? 'text' : 'password';
-        if (btn) btn.textContent = isHidden ? '🙈' : '👁';
-    },
-
-    // ── Main analysis flows ───────────────────────────────────────────
-
-    async analyzeSilence() {
-        Logger.info('Starting silence analysis');
-
-        // Try sync first, then async
-        let sequence = PremiereAPI.getActiveSequence();
-        if (!sequence) {
-            this.showLoading('Detecting sequence…');
-            sequence = await PremiereAPI.getActiveSequenceAsync();
-        }
-        if (!sequence) {
-            this.hideLoading();
-            this.showError('No active sequence found. Open a sequence in Premiere\'s timeline and try again.');
+        if (!self._pendingEditPlan) {
+            self.showError('Run Analyze first — no pending edit plan.');
             return;
         }
 
-        const thresholdEl = document.getElementById('silenceThreshold');
-        const threshold = thresholdEl ? thresholdEl.value : -50;
-        const durationEl = document.getElementById('minSilenceDuration');
-        const duration  = durationEl ? durationEl.value : 500;
-
-        if (!Validators.isValidSilenceThreshold(threshold)) {
-            this.showError('Threshold must be between -80 and -10 dB.');
-            return;
-        }
-        if (!Validators.isValidMinDuration(duration)) {
-            this.showError('Duration must be between 100 and 2000 ms.');
-            return;
-        }
-
-        const provider = this._getProvider();
-        const apiKey   = this._getApiKey();
-        var localProviders = { 'ollama': true, 'openai-compatible': true };
-        if (!localProviders[provider] && !Validators.isValidApiKey(apiKey)) {
-            this.showError('No API key — add it in the Config tab.');
-            return;
-        }
-
-        UIState.updateSetting('silenceThreshold', parseFloat(threshold));
-        UIState.updateSetting('minSilenceDuration', parseInt(duration, 10));
-        this.showLoading('Reading timeline…');
+        self._updateStatusBar('Committing edits…', 50);
+        self.showLoading('Applying cuts…');
 
         try {
-            const metadata = ProjectReader.readProjectMetadata();
-            if (!metadata) {
-                this.showError('Could not read project metadata. Is a sequence open?');
-                this.hideLoading();
-                return;
-            }
+            var result = await TimelineEditor.commitEdits(self._pendingEditPlan);
 
-            this.showLoading('Analyzing…');
-            this._initAIService();
-
-            const raw    = await AIService.analyzeSilence(ProjectReader.formatForAPI(metadata), parseFloat(threshold), parseInt(duration, 10));
-            const parsed = ResponseParser.parseSilenceResponse(raw);
-
-            if (!parsed || !parsed.segments.length) {
-                this.showError('No silence segments found. Try lowering the threshold.');
-                this.hideLoading();
-                return;
-            }
-
-            this.hideLoading();
-            this.displayResults({ type: 'silence', ...parsed });
-            Logger.info(`Silence analysis done — ${parsed.segments.length} segments`);
-        } catch (error) {
-            Logger.error('Silence analysis failed', error);
-            this.showError(ErrorHandler.handleAPIError(error).userMessage);
-        }
-    },
-
-    async detectBroll() {
-        Logger.info('Starting B-roll detection');
-
-        let sequence = PremiereAPI.getActiveSequence();
-        if (!sequence) {
-            this.showLoading('Detecting sequence…');
-            sequence = await PremiereAPI.getActiveSequenceAsync();
-        }
-        if (!sequence) {
-            this.hideLoading();
-            this.showError('No active sequence found. Open a sequence in Premiere\'s timeline and try again.');
-            return;
-        }
-
-        const confidenceEl = document.getElementById('confidenceThreshold');
-        const confidence = confidenceEl ? confidenceEl.value : 0.7;
-        if (!Validators.isValidConfidence(confidence)) {
-            this.showError('Confidence must be between 0.5 and 0.95.');
-            return;
-        }
-
-        const provider2  = this._getProvider();
-        const apiKey2    = this._getApiKey();
-        var localProviders2 = { 'ollama': true, 'openai-compatible': true };
-        if (!localProviders2[provider2] && !Validators.isValidApiKey(apiKey2)) {
-            this.showError('No API key — add it in the Config tab.');
-            return;
-        }
-
-        UIState.updateSetting('confidenceThreshold', parseFloat(confidence));
-        this.showLoading('Reading timeline…');
-
-        try {
-            const metadata = ProjectReader.readProjectMetadata();
-            if (!metadata) {
-                this.showError('Could not read project metadata. Is a sequence open?');
-                this.hideLoading();
-                return;
-            }
-
-            this.showLoading('Analyzing…');
-            this._initAIService();
-
-            const raw    = await AIService.detectBroll(ProjectReader.formatForAPI(metadata), parseFloat(confidence));
-            const parsed = ResponseParser.parseBrollResponse(raw);
-
-            if (!parsed || !parsed.opportunities.length) {
-                this.showError('No B-roll opportunities found. Try lowering the confidence threshold.');
-                this.hideLoading();
-                return;
-            }
-
-            this.hideLoading();
-            this.displayResults({ type: 'broll', ...parsed });
-            Logger.info(`B-roll detection done — ${parsed.opportunities.length} opportunities`);
-        } catch (error) {
-            Logger.error('B-roll detection failed', error);
-            this.showError(ErrorHandler.handleAPIError(error).userMessage);
-        }
-    },
-
-    async applyEdits() {
-        const results = UIState.getState('results');
-        if (!results) { this.showError('No results to apply.'); return; }
-
-        this.showLoading('Adding markers to timeline…');
-
-        try {
-            let editResult;
-            if (results.type === 'silence') {
-                editResult = await TimelineEditor.markSilenceSegments(results.segments);
-            } else if (results.type === 'broll') {
-                editResult = await TimelineEditor.markBrollOpportunities(results.opportunities);
-            }
-
-            this.hideLoading();
-
-            if (editResult && editResult.marked > 0) {
-                this.updateStatus('success', editResult.marked + ' MARKERS ADDED');
-                UIState.reset();
-                this.hideResults();
-            } else {
-                this.showError('Could not write markers — sequence.markers is unavailable in this PPro version. Try adding markers manually using the analysis timestamps shown.');
-            }
-        } catch (error) {
-            Logger.error('Apply edits failed', error);
-            this.hideLoading();
-            this.showError('Failed to apply edits: ' + error.message);
-        }
-    },
-
-    discardResults() {
-        UIState.reset();
-        this.hideResults();
-        this.updateStatus('ready', 'READY');
-    },
-
-    // ── AI Tools ──────────────────────────────────────────────────────────────
-
-    async organizeProjectBins() {
-        const btn = document.getElementById('organizeBinsBtn');
-        const log = document.getElementById('organizeLog');
-        if (!log) return;
-
-        btn.disabled    = true;
-        btn.textContent = '⏳ Organizing…';
-        log.innerHTML   = '';
-        log.style.display = 'block';
-
-        const self = this;
-
-        function addEntry(icon, msg, color) {
-            const row = document.createElement('div');
-            row.style.cssText = 'display:flex;align-items:flex-start;gap:6px;padding:4px 8px;' +
-                                'border-bottom:1px solid rgba(255,255,255,0.05);animation:ambar-fadein 0.15s ease';
-            row.innerHTML = '<span style="flex-shrink:0;line-height:1.6">' + icon + '</span>' +
-                            '<span style="color:' + (color || 'var(--text-2,#aaa)') + ';line-height:1.6;word-break:break-all">' +
-                            msg + '</span>';
-            log.appendChild(row);
-            log.scrollTop = log.scrollHeight;
-        }
-
-        function onProgress(e) {
-            if (e.type === 'start') {
-                addEntry('📋', 'Found ' + e.total + ' clip' + (e.total === 1 ? '' : 's') + ' — starting Pass 1 (llava descriptions)…');
-            } else if (e.type === 'pass1-start') {
-                addEntry('🚀', 'Extracting frames in parallel…');
-            } else if (e.type === 'extracting') {
-                addEntry('🎬', '[' + e.index + '/' + e.total + '] ' + e.name + ' — extracting frame…');
-            } else if (e.type === 'describing') {
-                addEntry('👁', '[' + e.index + '/' + e.total + '] ' + e.name + ' — llava describing…');
-            } else if (e.type === 'described') {
-                addEntry('💬', '[' + e.index + '/' + e.total + '] ' + e.name + ': ' + (e.description || '…'), 'var(--text-2,#888)');
-            } else if (e.type === 'classifying-all') {
-                addEntry('🧠', 'Pass 2 — classifying all ' + e.total + ' clip' + (e.total === 1 ? '' : 's') + ' in one AI call…', '#7ecbff');
-            } else if (e.type === 'classified') {
-                var confStr = (e.confidence > 0) ? ' (' + (e.confidence * 100).toFixed(0) + '%)' : '';
-                addEntry('📁', e.name + ' → ' + e.binName + confStr, '#7ecbff');
-            } else if (e.type === 'skip') {
-                addEntry('⚠', '[' + e.index + '/' + e.total + '] ' + e.name + ' skipped — ' + e.reason, '#ff9800');
-            } else if (e.type === 'creating-bin') {
-                addEntry('📂', 'Creating bin ' + e.binName + ' (' + e.count + ' clip' + (e.count === 1 ? '' : 's') + ')…');
-            } else if (e.type === 'bin-done') {
-                addEntry('✅', 'Moved ' + e.count + ' clip' + (e.count === 1 ? '' : 's') + ' → ' + e.binName, '#4caf50');
-            } else if (e.type === 'bin-error') {
-                addEntry('❌', e.binName + ' failed: ' + e.error, '#e57373');
-            } else if (e.type === 'done') {
-                const summary = e.bins
-                    .filter(function(b) { return b.success; })
-                    .map(function(b) { return b.binName; })
-                    .join(', ');
-                if (e.totalMoved > 0) {
-                    addEntry('🎉', 'Done — ' + e.totalMoved + ' clip' + (e.totalMoved === 1 ? '' : 's') +
-                             ' organized' + (summary ? ' into ' + summary : ''), '#4caf50');
-                } else {
-                    addEntry('⚠', 'Done — 0 clips moved. Check Ollama is running with llava pulled (ollama pull llava)', '#ff9800');
+            if (result.success) {
+                self._pendingEditPlan = null;
+                var n = result.cutsApplied;
+                var commitHint = document.getElementById('commitEditsHint');
+                if (commitHint) {
+                    commitHint.textContent = n + ' cut' + (n === 1 ? '' : 's') + ' applied. Undo with Ctrl+Z.';
+                    commitHint.classList.add('success');
                 }
-            }
-        }
-
-        try {
-            await ProjectOrganizer.organizeProjectClips(onProgress);
-        } catch (e) {
-            addEntry('❌', 'Error: ' + e.message, '#e57373');
-        }
-
-        btn.disabled    = false;
-        btn.textContent = '🗂 Organize Project Bins';
-    },
-
-    async testFrameExtraction() {
-        const btn    = document.getElementById('testFrameBtn');
-        const status = document.getElementById('frameTestStatus');
-        if (!status) return;
-
-        btn.disabled    = true;
-        btn.textContent = '⏳ Testing…';
-        status.style.display    = 'block';
-        status.style.background = 'var(--surface-2, #1a1a2e)';
-        status.style.color      = 'var(--text-2, #aaa)';
-        status.textContent      = 'Getting source file…';
-
-        try {
-            // Get the active sequence's source file path
-            const sequence = await PremiereAPI.getActiveSequenceAsync();
-            if (!sequence) {
-                status.style.color = '#e57373';
-                status.textContent = '✗ No active sequence — open a sequence first.';
-                btn.disabled = false; btn.textContent = '🎞 Test Frame Extraction';
-                return;
-            }
-
-            const sourcePath = await PremiereAPI.getSourceFilePath(sequence);
-            if (!sourcePath) {
-                status.style.color = '#e57373';
-                status.textContent = '✗ Could not read source file path — is the CEP bridge panel open?';
-                btn.disabled = false; btn.textContent = '🎞 Test Frame Extraction';
-                return;
-            }
-
-            status.textContent = 'Extracting frame via CEP bridge (ffmpeg)…';
-            const base64 = await FrameExtractor.extractFrame(sourcePath, 5);
-            if (!base64) {
-                status.style.color = '#ff9800';
-                status.textContent = '⚠ Frame extraction failed. Install ffmpeg (winget install ffmpeg) then reload the CEP Bridge panel (Window → Extensions → Ambar Bridge).';
-                btn.disabled = false; btn.textContent = '🎞 Test Frame Extraction';
-                return;
-            }
-
-            status.textContent = 'Frame OK (' + Math.round(base64.length * 0.75 / 1024) + ' KB). Running Ollama moondream…';
-            const desc = await VisionService.describeFrame(base64, CONSTANTS.VISION_MODEL);
-            if (desc.success) {
-                status.style.color = '#4caf50';
-                status.textContent = '✓ Vision AI works! "' + desc.description + '"';
+                self._updateStatusBar(n + ' cuts applied', 100);
+                var commitBtn = document.getElementById('commitEditsBtn');
+                if (commitBtn) commitBtn.disabled = true;
             } else {
-                status.style.color = '#ff9800';
-                status.textContent = '⚠ Frame OK but Ollama failed: ' + (desc.error || 'unknown error') + '. Is Ollama running? Run: ollama pull moondream';
+                var bridgeMsg = result.timedOut
+                    ? 'CEP bridge timed out — check timeline before retrying.'
+                    : 'No clips deleted. ' + CONSTANTS.MESSAGES.BRIDGE_MISSING;
+                self.showError('Commit finished but ' + bridgeMsg);
+                self._updateStatusBar('Commit error', 0);
             }
         } catch (e) {
-            status.style.color = '#e57373';
-            status.textContent = '✗ ' + e.message;
+            Logger.error('commitEdits: ' + e.message);
+            self.showError('Commit failed: ' + e.message);
+            self._updateStatusBar('Error', 0);
         }
 
-        btn.disabled = false;
-        btn.textContent = '🎞 Test Frame Extraction';
+        self.hideLoading();
     },
+
+    // ── B-roll ────────────────────────────────────────────────────────
 
     async suggestBroll() {
         const btn      = document.getElementById('suggestBrollBtn');
@@ -1551,39 +665,52 @@ const UIController = {
         log.innerHTML     = '';
         log.style.display = 'block';
 
-        function addEntry(icon, msg, color) {
+        this._setStepCard('step-vision-classify', 'active');
+        this._updateStatusBar('Classifying clips…', 20);
+
+        const addEntry = (icon, msg, color) => {
             const row = document.createElement('div');
             row.style.cssText = 'display:flex;align-items:flex-start;gap:6px;padding:4px 8px;' +
-                                'border-bottom:1px solid rgba(255,255,255,0.05);animation:ambar-fadein 0.15s ease';
+                                'border-bottom:0.5px solid rgba(255,255,255,0.05);';
             row.innerHTML = '<span style="flex-shrink:0;line-height:1.6">' + icon + '</span>' +
-                            '<span style="color:' + (color || 'var(--text-2,#aaa)') + ';line-height:1.6;word-break:break-all">' +
+                            '<span style="color:' + (color || 'var(--text-2)') + ';font-size:11px;line-height:1.6;word-break:break-all">' +
                             msg + '</span>';
             log.appendChild(row);
             log.scrollTop = log.scrollHeight;
-        }
+        };
 
         try {
             addEntry('🔍', 'Fetching project clips and matching to transcript…');
             const result = await BrollPlacer.suggestBroll();
 
+            this._setStepCard('step-vision-classify', 'done');
+            this._setStepCard('step-suggest-placements', 'active');
+
             if (!result.success) {
-                addEntry('❌', result.error || 'Failed', '#e57373');
+                addEntry('❌', result.error || 'Failed', 'var(--danger)');
+                this._setStepCard('step-suggest-placements', 'error');
+                this._updateStatusBar('B-roll suggestion failed', 0);
             } else {
                 const placements = result.plan.placements;
                 if (placements.length === 0) {
-                    addEntry('⚠', 'AI found no suitable B-roll moments. Check transcript and available clips.', '#ff9800');
+                    addEntry('⚠', 'AI found no suitable B-roll moments. Check transcript and clips.', 'var(--warning)');
+                    this._setStepCard('step-suggest-placements', 'error');
                 } else {
-                    addEntry('✅', 'AI suggested ' + placements.length + ' placement(s) — review then click Place.', '#4caf50');
+                    addEntry('✅', 'AI suggested ' + placements.length + ' placement(s) — review then click Place.', 'var(--success)');
                     for (var i = 0; i < placements.length; i++) {
                         const p = placements[i];
                         const dur = (p.durationSeconds || 5).toFixed(1);
-                        addEntry('🎬', p.clipName + ' @ ' + p.atSeconds.toFixed(1) + 's (' + dur + 's) — ' + (p.reason || ''), '#7ecbff');
+                        addEntry('🎬', p.clipName + ' @ ' + p.atSeconds.toFixed(1) + 's (' + dur + 's) — ' + (p.reason || ''), 'var(--ai-cyan)');
                     }
+                    this._setStepCard('step-suggest-placements', 'done',
+                        placements.length + ' placements', 'done');
                     if (placeBtn) placeBtn.disabled = false;
+                    this._updateStatusBar(placements.length + ' B-roll suggestions ready', 80);
                 }
             }
         } catch (e) {
-            addEntry('❌', 'Error: ' + e.message, '#e57373');
+            addEntry('❌', 'Error: ' + e.message, 'var(--danger)');
+            this._setStepCard('step-vision-classify', 'error');
         }
 
         btn.disabled    = false;
@@ -1597,36 +724,380 @@ const UIController = {
 
         btn.disabled    = true;
         btn.textContent = '⏳ Placing…';
+        this._setStepCard('step-place-v2', 'active');
+        this._updateStatusBar('Placing B-roll…', 60);
 
-        function addEntry(icon, msg, color) {
+        const addEntry = (icon, msg, color) => {
             const row = document.createElement('div');
             row.style.cssText = 'display:flex;align-items:flex-start;gap:6px;padding:4px 8px;' +
-                                'border-bottom:1px solid rgba(255,255,255,0.05);animation:ambar-fadein 0.15s ease';
+                                'border-bottom:0.5px solid rgba(255,255,255,0.05);';
             row.innerHTML = '<span style="flex-shrink:0;line-height:1.6">' + icon + '</span>' +
-                            '<span style="color:' + (color || 'var(--text-2,#aaa)') + ';line-height:1.6;word-break:break-all">' +
+                            '<span style="color:' + (color || 'var(--text-2)') + ';font-size:11px;line-height:1.6;word-break:break-all">' +
                             msg + '</span>';
             log.appendChild(row);
             log.scrollTop = log.scrollHeight;
-        }
+        };
 
         try {
             addEntry('🎬', 'Placing B-roll on V2…');
             const result = await BrollPlacer.commitBroll(BrollPlacer._lastPlan);
+
             if (result.placed > 0) {
-                addEntry('🎉', 'Placed ' + result.placed + '/' + result.total + ' clip(s) on V2.', '#4caf50');
+                addEntry('🎉', 'Placed ' + result.placed + '/' + result.total + ' clip(s) on V2.', 'var(--success)');
+                this._setStepCard('step-place-v2', 'done', result.placed + ' placed', 'done');
+                this._updateStatusBar(result.placed + ' B-roll clips placed', 100);
             } else {
-                addEntry('⚠', 'No clips placed. Verify the CEP bridge panel is open (Window → Extensions → Ambar Bridge).', '#ff9800');
+                addEntry('⚠', 'No clips placed. Verify CEP bridge panel is open (Window → Extensions → Ambar Bridge).', 'var(--warning)');
+                this._setStepCard('step-place-v2', 'error');
+                this._updateStatusBar('B-roll placement failed', 0);
             }
+
             for (var i = 0; i < result.errors.length; i++) {
-                addEntry('❌', result.errors[i], '#e57373');
+                addEntry('❌', result.errors[i], 'var(--danger)');
             }
         } catch (e) {
-            addEntry('❌', 'Error: ' + e.message, '#e57373');
+            addEntry('❌', 'Error: ' + e.message, 'var(--danger)');
+            this._setStepCard('step-place-v2', 'error');
         }
 
         btn.disabled    = false;
-        btn.textContent = '✅ Place B-roll on Timeline';
+        btn.textContent = '✅ Place on timeline';
     },
+
+    // ── Captions ──────────────────────────────────────────────────────
+
+    selectCaptionTemplate(templateName) {
+        this._captionTemplate = templateName;
+
+        document.querySelectorAll('.template-card').forEach(function(card) {
+            card.classList.toggle('selected', card.dataset.template === templateName);
+        });
+
+        Logger.debug('[Captions] Template selected: ' + templateName);
+    },
+
+    async openMogrtPicker() {
+        var self = this;
+        try {
+            var result = await this._openFilePicker(['mogrt'], true);
+            if (result) {
+                self._mogrtPath = result.nativePath || result.path || result.name;
+                var input = document.getElementById('mogrtPathInput');
+                if (input) input.value = self._mogrtPath;
+                Logger.info('[Captions] MOGRT selected: ' + self._mogrtPath);
+            }
+        } catch (e) {
+            self.showError('Could not open file: ' + e.message);
+        }
+    },
+
+    generateCaptions: async function() {
+        var self = this;
+        var btn  = document.getElementById('generateCaptionsBtn');
+        var hint = document.getElementById('captionsHint');
+
+        // Get transcript words from the last analysis
+        var words = UIState.getState('transcriptWords');
+        if (!words || words.length === 0) {
+            var srtTranscript = UIState.getState('srtTranscript');
+            if (srtTranscript && srtTranscript.words) words = srtTranscript.words;
+        }
+        // Primary source: Whisper output stored in TimelineEditor (BigInt ticks → ms)
+        if ((!words || words.length === 0) &&
+            typeof TimelineEditor !== 'undefined' &&
+            TimelineEditor._lastTranscriptWords &&
+            TimelineEditor._lastTranscriptWords.length > 0) {
+            var tps = Number(CONSTANTS.TICKS_PER_SECOND);
+            words = TimelineEditor._lastTranscriptWords.map(function(w) {
+                return {
+                    word:    w.word,
+                    startMs: Math.round(Number(w.startTicks) * 1000 / tps),
+                    endMs:   Math.round(Number(w.endTicks)   * 1000 / tps),
+                };
+            });
+        }
+
+        if (!words || words.length === 0) {
+            self.showError('No transcript available — run Analyze first to generate word timestamps.');
+            return;
+        }
+
+        if (btn) { btn.disabled = true; btn.textContent = '⏳ Generating…'; }
+        if (hint) hint.style.display = 'none';
+        self._updateStatusBar('Generating SRT…', 30);
+
+        try {
+            // Layer 1: generate SRT string
+            const srtString = CaptionEngine.generateSRT(words);
+            if (!srtString) {
+                self.showError('Caption generation produced empty output.');
+                return;
+            }
+
+            // Layer 2: write to temp dir
+            const writeResult = await CaptionEngine.writeSRTToTemp(srtString);
+            if (!writeResult.success) {
+                self.showError('Could not write SRT file: ' + writeResult.error);
+                return;
+            }
+
+            self._updateStatusBar('Applying to timeline…', 70);
+
+            // Layer 3: custom .mogrt path uses MOGRT placement; all others use SRT caption track
+            var applyResult;
+            if (this._captionTemplate === 'custom' && this._mogrtPath) {
+                applyResult = await CaptionEngine.importCustomMogrt(this._mogrtPath, words);
+            } else {
+                applyResult = await CaptionEngine.applyToTimeline(
+                    writeResult.path, this._captionTemplate, null
+                );
+            }
+
+            if (!applyResult.success) {
+                self.showError('Caption track creation failed: ' + applyResult.error);
+                self._updateStatusBar('Caption error', 0);
+                return;
+            }
+
+            // Store SRT string for export
+            UIState.setState('lastSrtString', srtString);
+
+            if (hint) {
+                hint.textContent = 'Caption track added to timeline. Export SRT for further editing.';
+                hint.style.display = '';
+            }
+            self._updateStatusBar('Captions applied to timeline', 100);
+            Logger.info('[Captions] Done — caption track created');
+        } catch (e) {
+            Logger.error('generateCaptions: ' + e.message);
+            self.showError('Caption generation failed: ' + e.message);
+            self._updateStatusBar('Error', 0);
+        }
+
+        if (btn) { btn.disabled = false; btn.textContent = '💬 Generate captions'; }
+    },
+
+    exportSrt: async function() {
+        var self = this;
+
+        // Try to use a cached SRT or generate fresh
+        var srtString = UIState.getState('lastSrtString');
+        if (!srtString) {
+            var words = UIState.getState('transcriptWords');
+            if (!words || words.length === 0) {
+                var srtTranscript = UIState.getState('srtTranscript');
+                if (srtTranscript && srtTranscript.words) words = srtTranscript.words;
+            }
+            // Fallback: Whisper output stored in TimelineEditor (BigInt ticks → ms)
+            if ((!words || words.length === 0) &&
+                typeof TimelineEditor !== 'undefined' &&
+                TimelineEditor._lastTranscriptWords &&
+                TimelineEditor._lastTranscriptWords.length > 0) {
+                var tps = Number(CONSTANTS.TICKS_PER_SECOND);
+                words = TimelineEditor._lastTranscriptWords.map(function(w) {
+                    return {
+                        word:    w.word,
+                        startMs: Math.round(Number(w.startTicks) * 1000 / tps),
+                        endMs:   Math.round(Number(w.endTicks)   * 1000 / tps),
+                    };
+                });
+            }
+            if (!words || words.length === 0) {
+                self.showError('No transcript available — run Analyze first.');
+                return;
+            }
+            srtString = CaptionEngine.generateSRT(words);
+        }
+
+        if (!srtString) {
+            self.showError('Could not generate SRT from transcript.');
+            return;
+        }
+
+        try {
+            var result = await self._saveFile(srtString, 'ambar_captions.srt', 'srt');
+            if (result) {
+                self._updateStatusBar('SRT saved', 100);
+                Logger.info('[Captions] SRT exported to ' + (result.nativePath || result.name));
+            }
+        } catch (e) {
+            self.showError('Export failed: ' + e.message);
+        }
+    },
+
+    // ── Organise ──────────────────────────────────────────────────────
+
+    async organizeProjectBins() {
+        const btn = document.getElementById('organizeBinsBtn');
+        const log = document.getElementById('organizeLog');
+        if (!log) return;
+
+        btn.disabled    = true;
+        btn.textContent = '⏳ Organizing…';
+        log.innerHTML   = '';
+        log.style.display = 'block';
+
+        this._setStepCard('step-vision-scan', 'active');
+        this._updateStatusBar('Vision scanning clips…', 20);
+
+        const addEntry = (icon, msg, color) => {
+            const row = document.createElement('div');
+            row.style.cssText = 'display:flex;align-items:flex-start;gap:6px;padding:4px 8px;' +
+                                'border-bottom:0.5px solid rgba(255,255,255,0.05);animation:ambar-fadein 0.15s ease';
+            row.innerHTML = '<span style="flex-shrink:0;line-height:1.6">' + icon + '</span>' +
+                            '<span style="color:' + (color || 'var(--text-2)') + ';font-size:11px;line-height:1.6;word-break:break-all">' +
+                            msg + '</span>';
+            log.appendChild(row);
+            log.scrollTop = log.scrollHeight;
+        };
+
+        const self = this;
+
+        function onProgress(e) {
+            if (e.type === 'start') {
+                addEntry('📋', 'Found ' + e.total + ' clip(s) — starting Pass 1 (vision descriptions)…');
+            } else if (e.type === 'pass1-start') {
+                addEntry('🚀', 'Extracting frames in parallel…');
+            } else if (e.type === 'extracting') {
+                addEntry('🎬', '[' + e.index + '/' + e.total + '] ' + e.name + ' — extracting frame…');
+            } else if (e.type === 'describing') {
+                addEntry('👁', '[' + e.index + '/' + e.total + '] ' + e.name + ' — vision describing…');
+            } else if (e.type === 'described') {
+                addEntry('💬', '[' + e.index + '/' + e.total + '] ' + e.name + ': ' + (e.description || '…'), 'var(--text-2)');
+            } else if (e.type === 'classifying-all') {
+                self._setStepCard('step-vision-scan', 'done');
+                self._setStepCard('step-create-bins', 'active');
+                self._updateStatusBar('Creating bins…', 70);
+                addEntry('🧠', 'Pass 2 — classifying all ' + e.total + ' clip(s)…', 'var(--ai-cyan)');
+            } else if (e.type === 'classified') {
+                var confStr = (e.confidence > 0) ? ' (' + (e.confidence * 100).toFixed(0) + '%)' : '';
+                addEntry('📁', e.name + ' → ' + e.binName + confStr, 'var(--ai-cyan)');
+            } else if (e.type === 'skip') {
+                addEntry('⚠', '[' + e.index + '/' + e.total + '] ' + e.name + ' skipped — ' + e.reason, 'var(--warning)');
+            } else if (e.type === 'creating-bin') {
+                addEntry('📂', 'Creating bin ' + e.binName + ' (' + e.count + ' clip(s))…');
+            } else if (e.type === 'bin-done') {
+                addEntry('✅', 'Moved ' + e.count + ' clip(s) → ' + e.binName, 'var(--success)');
+            } else if (e.type === 'bin-error') {
+                addEntry('❌', e.binName + ' failed: ' + e.error, 'var(--danger)');
+            } else if (e.type === 'done') {
+                const summary = e.bins
+                    .filter(function(b) { return b.success; })
+                    .map(function(b) { return b.binName; })
+                    .join(', ');
+                if (e.totalMoved > 0) {
+                    addEntry('🎉', 'Done — ' + e.totalMoved + ' clip(s) organized' + (summary ? ' into ' + summary : ''), 'var(--success)');
+                    self._setStepCard('step-create-bins', 'done', e.totalMoved + ' clips moved', 'done');
+                    self._updateStatusBar(e.totalMoved + ' clips organized', 100);
+                } else {
+                    addEntry('⚠', 'Done — 0 clips moved. Check Ollama is running with llava pulled.', 'var(--warning)');
+                    self._setStepCard('step-create-bins', 'error');
+                }
+            }
+        }
+
+        try {
+            await ProjectOrganizer.organizeProjectClips(onProgress);
+        } catch (e) {
+            addEntry('❌', 'Error: ' + e.message, 'var(--danger)');
+            this._setStepCard('step-vision-scan', 'error');
+        }
+
+        btn.disabled    = false;
+        btn.textContent = '📁 Organise project bins';
+    },
+
+    // ── Settings ──────────────────────────────────────────────────────
+
+    toggleDebugMode() {
+        const cb = document.getElementById('enableDebug');
+        const on = cb ? cb.checked : false;
+        UIState.setState('debugEnabled', on);
+        CONSTANTS.DEBUG = on;
+        Logger.info('Debug mode: ' + (on ? 'ON' : 'OFF'));
+    },
+
+    saveSettings() {
+        try {
+            const provider = this._getProvider();
+            UIState.updateSetting('apiKey',           this._getApiKey());
+            UIState.updateSetting('aiProvider',       provider);
+            UIState.updateSetting('aiModel',          this._getModel());
+            UIState.updateSetting('baseUrl',          this._getBaseUrl());
+
+            const wpEl = document.getElementById('whisperProvider');
+            if (wpEl) UIState.updateSetting('whisperProvider', wpEl.value);
+
+            const vmEl = document.getElementById('visionModel');
+            if (vmEl) UIState.updateSetting('visionModel', vmEl.value);
+
+            localStorage.setItem('pluginSettings', JSON.stringify(UIState.getSettings()));
+            CONSTANTS.AI_PROVIDER = provider;
+            this._initAIService();
+            this._updateStatusBar('Settings saved', 100);
+            setTimeout(() => this._updateStatusBar('Ready', 0), 2000);
+            Logger.debug('Settings saved: provider=' + provider);
+        } catch (e) {
+            Logger.error('Failed to save settings', e);
+        }
+    },
+
+    restoreSettings() {
+        try {
+            const saved = localStorage.getItem('pluginSettings');
+            if (!saved) return;
+            const settings = JSON.parse(saved);
+
+            for (const [key, value] of Object.entries(settings)) {
+                UIState.updateSetting(key, value);
+                const textEl = document.getElementById(key + 'Input') || document.getElementById(key);
+                if (textEl && textEl.tagName === 'INPUT' && textEl.type !== 'range') {
+                    textEl.value = value;
+                }
+            }
+
+            if (settings.aiProvider || CONSTANTS.AI_PROVIDER) {
+                const provEl = document.getElementById('aiProvider');
+                const displayProvider = CONSTANTS.AI_PROVIDER || settings.aiProvider;
+                if (provEl) provEl.value = displayProvider;
+                CONSTANTS.AI_PROVIDER = displayProvider;
+                this._updateProviderUI(displayProvider);
+            }
+            if (settings.aiModel || CONSTANTS.AI_MODEL) {
+                const modEl = document.getElementById('aiModel');
+                const displayModel = CONSTANTS.AI_MODEL || settings.aiModel;
+                if (modEl) modEl.value = displayModel;
+            }
+            if (settings.baseUrl) {
+                const urlEl = document.getElementById('baseUrlInput');
+                if (urlEl) urlEl.value = settings.baseUrl;
+            }
+            if (settings.whisperProvider) {
+                const wpEl = document.getElementById('whisperProvider');
+                if (wpEl) wpEl.value = settings.whisperProvider;
+                CONSTANTS.WHISPER_PROVIDER = settings.whisperProvider;
+            }
+            if (settings.visionModel) {
+                const vmEl = document.getElementById('visionModel');
+                if (vmEl) vmEl.value = settings.visionModel;
+                CONSTANTS.VISION_MODEL = settings.visionModel;
+            }
+
+            AIService.initialize({
+                provider: CONSTANTS.AI_PROVIDER || settings.aiProvider || 'ollama',
+                apiKey:   settings.apiKey  || '',
+                model:    CONSTANTS.AI_MODEL || settings.aiModel || '',
+                baseUrl:  settings.baseUrl || '',
+            });
+
+            Logger.debug('Settings restored: provider=' +
+                (CONSTANTS.AI_PROVIDER || settings.aiProvider || 'ollama'));
+        } catch (e) {
+            Logger.error('Failed to restore settings', e);
+        }
+    },
+
+    // ── Diagnostic ────────────────────────────────────────────────────
 
     runDiagnostic() {
         const out = document.getElementById('diagnosticOut');
@@ -1637,7 +1108,6 @@ const UIController = {
         const err = (msg) => lines.push('<span class="diag-err">✗ ' + msg + '</span>');
         const wrn = (msg) => lines.push('<span class="diag-warn">⚠ ' + msg + '</span>');
 
-        // ── 1. Check require('premierepro') ──────────────────────────
         let ppro = null;
         try {
             ppro = require('premierepro');
@@ -1645,17 +1115,14 @@ const UIController = {
             ok('  exports: ' + Object.keys(ppro).join(', '));
         } catch (e) {
             err('require("premierepro") FAILED: ' + e.message);
-            err('  Plugin must be loaded via UXP Developer Tool into Premiere Pro');
         }
 
-        // ── 2. Check legacy global app ───────────────────────────────
         if (typeof app !== 'undefined') {
             ok('Legacy global app also exists (version: ' + (app.version || '?') + ')');
         } else {
-            wrn('Global app is undefined (expected in UXP — using require instead)');
+            wrn('Global app is undefined (expected in UXP)');
         }
 
-        // ── 3. Project object ────────────────────────────────────────
         if (ppro) {
             let project = null;
             try {
@@ -1663,380 +1130,19 @@ const UIController = {
                 if (project) ok('Project.getActiveProject() → "' + (project.name || '(unnamed)') + '"');
                 else         err('Project.getActiveProject() returned null');
             } catch (e) { err('Project error: ' + e.message); }
-
-            if (project) {
-                // Show all keys on the project object so we know exact method names
-                try {
-                    const keys = [];
-                    for (const k in project) keys.push(k);
-                    // Also own properties
-                    Object.getOwnPropertyNames(project).forEach(k => { if (!keys.includes(k)) keys.push(k); });
-                    ok('project keys: ' + (keys.length ? keys.join(', ') : '(none — prototype only)'));
-                } catch (e) { wrn('Could not enumerate project keys: ' + e.message); }
-
-                // Try every plausible pattern to get active sequence
-                const seqAttempts = [
-                    () => project.activeSequence,
-                    () => project.getActiveSequence && project.getActiveSequence(),
-                    () => project.getSequence && project.getSequence(),
-                    () => ppro.Sequence && ppro.Sequence.getActiveSequence && ppro.Sequence.getActiveSequence(),
-                    () => ppro.SequenceEditor && ppro.SequenceEditor.getActiveSequence && ppro.SequenceEditor.getActiveSequence(),
-                ];
-                let foundSeq = false;
-                seqAttempts.forEach((fn, i) => {
-                    try {
-                        const s = fn();
-                        if (s && s.name) { ok('Sequence attempt #' + i + ' → "' + s.name + '" id=' + s.sequenceID); foundSeq = true; }
-                        else wrn('Sequence attempt #' + i + ' → ' + JSON.stringify(s));
-                    } catch (e) { wrn('Seq attempt #' + i + ' threw: ' + e.message); }
-                });
-                if (!foundSeq) err('All sequence access attempts returned null/undefined');
-
-                // Try rootItem via property and method
-                try {
-                    const r1 = project.rootItem;
-                    if (r1) ok('project.rootItem → type=' + r1.type + ' name=' + r1.name);
-                    else    wrn('project.rootItem is null/undefined');
-                } catch (e) { wrn('project.rootItem threw: ' + e.message); }
-                try {
-                    const r2 = typeof project.getRootItem === 'function' ? project.getRootItem() : null;
-                    if (r2) ok('project.getRootItem() → type=' + r2.type + ' name=' + r2.name);
-                    else    wrn('project.getRootItem() → null (or method missing)');
-                } catch (e) { wrn('project.getRootItem() threw: ' + e.message); }
-            }
-
-            // ── 4. Sequence class ──────────────────────────────────────
-            if (ppro.Sequence) {
-                try {
-                    const skeys = [];
-                    for (const k in ppro.Sequence) skeys.push(k);
-                    Object.getOwnPropertyNames(ppro.Sequence).forEach(function(k) { if (skeys.indexOf(k) === -1) skeys.push(k); });
-                    ok('ppro.Sequence keys: ' + (skeys.length ? skeys.join(', ') : '(none — prototype only)'));
-                    // Try as a collection
-                    const numSeq = ppro.Sequence.numSequences;
-                    if (numSeq !== undefined) {
-                        ok('ppro.Sequence.numSequences = ' + numSeq);
-                        for (let i = 0; i < numSeq; i++) {
-                            try { const s = ppro.Sequence[i]; ok('  Sequence[' + i + ']: ' + (s ? s.name : 'null')); } catch (se) { wrn('  Sequence[' + i + ']: threw ' + se.message); }
-                        }
-                    } else wrn('ppro.Sequence.numSequences = undefined');
-                } catch (e) { wrn('Sequence check threw: ' + e.message); }
-            } else wrn('ppro.Sequence is not defined');
-
-            // ── 5. SequenceEditor ──────────────────────────────────────
-            if (ppro.SequenceEditor) {
-                try {
-                    const seKeys = [];
-                    for (const k in ppro.SequenceEditor) seKeys.push(k);
-                    Object.getOwnPropertyNames(ppro.SequenceEditor).forEach(function(k) { if (seKeys.indexOf(k) === -1) seKeys.push(k); });
-                    ok('ppro.SequenceEditor keys: ' + (seKeys.length ? seKeys.join(', ') : '(none — prototype only)'));
-
-                    // Try every plausible SequenceEditor accessor
-                    ['getActiveSequence', 'getSequence', 'getSequences', 'sequence', 'activeSequence'].forEach(function(name) {
-                        try {
-                            const val = typeof ppro.SequenceEditor[name] === 'function' ? ppro.SequenceEditor[name]() : ppro.SequenceEditor[name];
-                            if (val && val.name) ok('  SequenceEditor.' + name + ' → "' + val.name + '"');
-                            else wrn('  SequenceEditor.' + name + ' → ' + JSON.stringify(val));
-                        } catch (se) { wrn('  SequenceEditor.' + name + ' threw: ' + se.message); }
-                    });
-                } catch (e) { wrn('SequenceEditor check threw: ' + e.message); }
-            } else wrn('ppro.SequenceEditor is not defined');
-
-            // ── 6. SequenceEvent + eventRoot (NEW — the correct event system) ──
-            if (ppro.SequenceEvent) {
-                try {
-                    const seqEvKeys = [];
-                    for (const k in ppro.SequenceEvent) seqEvKeys.push(k + '=' + ppro.SequenceEvent[k]);
-                    Object.getOwnPropertyNames(ppro.SequenceEvent).forEach(function(k) {
-                        if (!seqEvKeys.find(function(x) { return x.startsWith(k + '='); })) seqEvKeys.push(k + '=' + ppro.SequenceEvent[k]);
-                    });
-                    ok('ppro.SequenceEvent: ' + (seqEvKeys.length ? seqEvKeys.join(', ') : '(no keys)'));
-                } catch (e) { wrn('SequenceEvent check threw: ' + e.message); }
-            } else wrn('ppro.SequenceEvent NOT exported (unexpected)');
-
-            if (ppro.eventRoot) {
-                try {
-                    const erKeys = [];
-                    for (const k in ppro.eventRoot) erKeys.push(k);
-                    ok('ppro.eventRoot exists — keys: ' + (erKeys.length ? erKeys.join(', ') : '(no own keys — EventTarget prototype)'));
-                } catch (e) { wrn('eventRoot check threw: ' + e.message); }
-            } else wrn('ppro.eventRoot NOT exported');
-
-            if (ppro.ProjectEvent) {
-                try {
-                    const projEvKeys = [];
-                    for (const k in ppro.ProjectEvent) projEvKeys.push(k + '=' + ppro.ProjectEvent[k]);
-                    ok('ppro.ProjectEvent: ' + (projEvKeys.length ? projEvKeys.join(', ') : '(no keys)'));
-                } catch (e) { wrn('ProjectEvent check threw: ' + e.message); }
-            }
-
-            if (ppro.SourceMonitor) {
-                try {
-                    const smKeys = [];
-                    for (const k in ppro.SourceMonitor) smKeys.push(k);
-                    Object.getOwnPropertyNames(ppro.SourceMonitor).forEach(function(k) { if (smKeys.indexOf(k) === -1) smKeys.push(k); });
-                    ok('ppro.SourceMonitor keys: ' + (smKeys.length ? smKeys.join(', ') : '(no own keys)'));
-                    if (typeof ppro.SourceMonitor.getActiveSequence === 'function') {
-                        const smSeq = ppro.SourceMonitor.getActiveSequence();
-                        smSeq && smSeq.name ? ok('SourceMonitor.getActiveSequence() → "' + smSeq.name + '"') : wrn('SourceMonitor.getActiveSequence() → ' + JSON.stringify(smSeq));
-                    }
-                } catch (e) { wrn('SourceMonitor check threw: ' + e.message); }
-            }
         }
 
-        // ── 7. Async probe (runs in background, updates panel) ────────
-        wrn('Running async probe — results appear below in ~2s...');
-        const self = this;
-        (async function() {
-            const asyncLines = [];
-            const aok  = function(m) { asyncLines.push('✓ [async] ' + m); };
-            const awrn = function(m) { asyncLines.push('<span class="diag-warn">⚠ [async] ' + m + '</span>'); };
-
-            try {
-                const p = ppro && ppro.Project ? ppro.Project.getActiveProject() : null;
-                if (p) {
-                    try { const s = await p.activeSequence;       s && s.name ? aok('await project.activeSequence → "' + s.name + '"')        : awrn('await project.activeSequence → ' + JSON.stringify(s)); } catch(e) { awrn('await project.activeSequence threw: ' + e.message); }
-                    try { const s = typeof p.getActiveSequence === 'function' ? await p.getActiveSequence() : null; s && s.name ? aok('await project.getActiveSequence() → "' + s.name + '"') : awrn('await project.getActiveSequence() → ' + JSON.stringify(s)); } catch(e) { awrn('await project.getActiveSequence() threw: ' + e.message); }
-                    try { const s = await p.sequences;           awrn('await project.sequences → ' + (s ? JSON.stringify(s) : 'null')); } catch(e) { awrn('await project.sequences threw: ' + e.message); }
-                }
-                if (ppro && ppro.SequenceEditor) {
-                    try { const s = typeof ppro.SequenceEditor.getActiveSequence === 'function' ? await ppro.SequenceEditor.getActiveSequence() : null; s && s.name ? aok('await SequenceEditor.getActiveSequence() → "' + s.name + '"') : awrn('await SequenceEditor.getActiveSequence() → ' + JSON.stringify(s)); } catch(e) { awrn('await SequenceEditor.getActiveSequence() threw: ' + e.message); }
-                    try { const s = await ppro.SequenceEditor.sequence; s && s.name ? aok('await SequenceEditor.sequence → "' + s.name + '"') : awrn('await SequenceEditor.sequence → ' + JSON.stringify(s)); } catch(e) { awrn('await SequenceEditor.sequence threw: ' + e.message); }
-                }
-                if (ppro && ppro.Sequence && typeof ppro.Sequence.queryCast === 'function' && p) {
-                    try { const cast = ppro.Sequence.queryCast(p); cast && cast.name ? aok('Sequence.queryCast(project) → "' + cast.name + '"') : awrn('Sequence.queryCast(project) → ' + JSON.stringify(cast)); } catch(e) { awrn('Sequence.queryCast threw: ' + e.message); }
-                }
-                if (ppro && ppro.SequenceEditor && typeof ppro.SequenceEditor.queryCast === 'function' && p) {
-                    try { const cast = ppro.SequenceEditor.queryCast(p); awrn('SequenceEditor.queryCast(project) → ' + (cast ? JSON.stringify(Object.keys(cast)) : 'null')); } catch(e) { awrn('SequenceEditor.queryCast threw: ' + e.message); }
-                }
-            } catch(e) { awrn('Async probe error: ' + e.message); }
-
-            // Append async results to the diagnostic panel
-            try {
-                var el = document.getElementById('diagnosticOut');
-                if (el) el.innerHTML += '\n' + asyncLines.join('\n');
-            } catch(_) {}
-        })();
-
-        // ── 9. Event listener status ──────────────────────────────────
-        ok('Event listeners registered: ' + (PremiereAPI._eventListenersSetup ? 'YES' : 'NO'));
-        if (PremiereAPI._activeSequence) {
-            var capSeq = PremiereAPI._activeSequence;
-            ok('Captured sequence: name="' + capSeq.name + '" id=' + (capSeq.id || capSeq.sequenceID || '?'));
-            // Show all keys on the captured sequence (incl prototype)
-            try {
-                var seqKeys = [];
-                for (var sk in capSeq) { try { seqKeys.push(sk); } catch(_) {} }
-                ok('  seq keys: ' + (seqKeys.length ? seqKeys.join(', ') : '(none)'));
-            } catch (_) {}
-            // Test queryCast(capSeq) — might give full Sequence interface
-            try {
-                var cast3 = ppro && ppro.Sequence && typeof ppro.Sequence.queryCast === 'function' ? ppro.Sequence.queryCast(capSeq) : null;
-                cast3 ? ok('  queryCast(capSeq) → ' + typeof cast3 + ' keys: ' + Object.keys(cast3).join(', ')) : wrn('  queryCast(capSeq) → null');
-            } catch (ce) { wrn('  queryCast(capSeq) threw: ' + ce.message); }
-            // Sync property/method test
-            ['videoTracks','audioTracks','duration','end','markers','getVideoTracks','getAudioTracks','getDuration'].forEach(function(p) {
-                try {
-                    var v = capSeq[p];
-                    if (typeof v === 'function') ok('  seq.' + p + ' is a function');
-                    else if (v !== undefined && v !== null) ok('  seq.' + p + ' = ' + typeof v);
-                    else wrn('  seq.' + p + ' → null/undefined');
-                } catch (pe) { wrn('  seq.' + p + ' threw: ' + pe.message); }
-            });
-            // Async property/method test
-            (async function() {
-                var alines = [];
-                var props = ['videoTracks','audioTracks','duration','end','markers','getVideoTracks','getAudioTracks'];
-                for (var ai = 0; ai < props.length; ai++) {
-                    var ap = props[ai];
-                    try {
-                        var raw = capSeq[ap];
-                        var v2 = typeof raw === 'function' ? await raw.call(capSeq) : await raw;
-                        if (v2 !== undefined && v2 !== null) {
-                            var desc = typeof v2;
-                            if (v2 && v2.numTracks !== undefined) desc += ' numTracks=' + v2.numTracks;
-                            if (v2 && v2.seconds !== undefined) desc += ' seconds=' + v2.seconds;
-                            if (typeof v2 === 'number') desc = String(v2);
-                            alines.push('  ⚡ await seq.' + ap + ' → ' + desc);
-                        } else {
-                            alines.push('  ⚡ await seq.' + ap + ' → undefined/null');
-                        }
-                    } catch (ae) { alines.push('  ⚡ await seq.' + ap + ' threw: ' + ae.message); }
-                }
-                try { var el3 = document.getElementById('diagnosticOut'); if (el3) el3.innerHTML += '\n' + alines.join('\n'); } catch(_) {}
-            })();
-        } else {
-            wrn('No sequence captured via events yet — open/click a sequence in PPro timeline');
-        }
-
-        // ── 10. AI provider + key ────────────────────────────────────
-        const provider = this._getProvider();
-        const model    = AIService.model || (typeof PROVIDERS !== 'undefined' && PROVIDERS[provider] ? PROVIDERS[provider].defaultModel : '');
-        ok('AI provider: ' + provider + ' / model: ' + (model || '(default)'));
+        ok('AI provider: ' + this._getProvider() + ' / model: ' + (AIService.model || '(default)'));
         const key = this._getApiKey();
-        if (provider === 'ollama') ok('Ollama: no API key needed');
-        else if (!key) wrn('No API key — add it in the Config tab');
+        if (this._getProvider() === 'ollama') ok('Ollama: no API key needed');
+        else if (!key) wrn('No API key — add it in Settings');
         else ok('API key: ' + key.slice(0, 8) + '… (' + key.length + ' chars)');
+
+        ok('Event listeners registered: ' + (PremiereAPI._eventListenersSetup ? 'YES' : 'NO'));
 
         out.innerHTML = lines.join('\n');
         out.style.display = 'block';
         Logger.info('Diagnostic ran — ' + lines.length + ' checks');
-    },
-
-    // ── Two-step timeline flow (new native workflow) ──────────────────
-
-    /**
-     * Step 1 — Analyze: read native Premiere transcript → AI → place markers.
-     * Stores the parsed editPlan so commitEdits() can use it without re-running AI.
-     * Called by the Analyze button (onclick="UIController.startTimelineAnalysis()").
-     */
-    startTimelineAnalysis: async function() {
-        var self     = this;
-        var provider = self._getProvider();
-        var apiKey   = self._getApiKey();
-        var noKeyOk  = provider === 'ollama' || provider === 'openai-compatible';
-
-        if (!noKeyOk && !apiKey) {
-            self.showError('Add an API key in the Settings tab first.');
-            return;
-        }
-
-        self._cancelRequested = false;
-        self._pendingEditPlan = null;
-        self._initAIService();
-        self.showLoading('Transcribing audio…');
-
-        try {
-            var srtFallback = UIState.getState('srtTranscript');
-            var result = await TimelineEditor.analyzeSequence(srtFallback);
-
-            if (self._cancelRequested) { UIState.set(CONSTANTS.STATES.READY); self.hideLoading(); return; }
-
-            if (!result.success) {
-                if (result.fileTooLarge) {
-                    var audioSection = document.getElementById('audioOverrideSection');
-                    if (audioSection) audioSection.style.display = '';
-                }
-                self.showError(result.error || 'Analysis failed — check provider settings or load an SRT file.');
-                return;
-            }
-
-            self._pendingEditPlan = result.editPlan;
-
-            var hint = document.getElementById('commitEditsHint');
-            if (hint) {
-                var n = result.silenceMarked || 0;
-                hint.textContent = n + ' silence marker' + (n === 1 ? '' : 's') + ' placed — review in the timeline, then commit.';
-                hint.style.display = '';
-            }
-
-            self.hideLoading();
-            Logger.info('Timeline analysis complete — ' + result.editPlan.segments.length + ' segment(s)');
-        } catch (e) {
-            Logger.error('startTimelineAnalysis: ' + e.message);
-            self.showError('Analysis failed: ' + e.message);
-            UIState.set(CONSTANTS.STATES.ERROR);
-        }
-    },
-
-    /**
-     * Step 2 — Commit: execute the ripple deletes stored in _pendingEditPlan.
-     * Disabled until analyzeAndMark completes successfully (UIState drives the button).
-     * Called by the Commit Edits button (onclick="UIController.commitEdits()").
-     */
-    commitEdits: async function() {
-        var self = this;
-
-        if (!self._pendingEditPlan) {
-            self.showError('Run Analyze first — no pending edit plan.');
-            return;
-        }
-
-        try {
-            var result = await TimelineEditor.commitEdits(self._pendingEditPlan);
-
-            if (result.success) {
-                self._pendingEditPlan = null;
-
-                var hint = document.getElementById('commitEditsHint');
-                if (hint) {
-                    var n = result.cutsApplied;
-                    hint.textContent = n + ' cut' + (n === 1 ? '' : 's') + ' applied. Undo with Ctrl+Z to revert all at once.';
-                }
-            } else {
-                // Distinguish "bridge missing" from "bridge timed out after cuts"
-                var bridgeMsg = result.timedOut
-                    ? 'CEP bridge timed out — cuts may still have been applied. Check your timeline before retrying.'
-                    : 'No clips were deleted. ' + CONSTANTS.MESSAGES.BRIDGE_MISSING;
-                self.showError('Commit finished but ' + bridgeMsg);
-                UIState.set(CONSTANTS.STATES.ERROR);
-            }
-        } catch (e) {
-            Logger.error('commitEdits: ' + e.message);
-            self.showError('Commit failed: ' + e.message);
-            UIState.set(CONSTANTS.STATES.ERROR);
-        }
-    },
-
-    toggleDebugMode() {
-        const cb = document.getElementById('enableDebug');
-        const on = cb ? cb.checked : false;
-        UIState.setState('debugEnabled', on);
-        CONSTANTS.DEBUG = on;
-        Logger.info('Debug mode: ' + (on ? 'ON' : 'OFF'));
-    },
-
-    // ── Results rendering ─────────────────────────────────────────────
-
-    displayResults(results) {
-        UIState.setResults(results);
-        const section = document.getElementById('resultsSection');
-        const list    = document.getElementById('resultsList');
-        if (!section || !list) return;
-
-        let html = '';
-
-        if (results.type === 'silence' && Array.isArray(results.segments)) {
-            html += `<div class="results-summary">${results.segments.length} segments · ${results.estimatedTimeSavings || '—'} savings</div>`;
-            html += '<div class="results-items">';
-            results.segments.forEach((seg, i) => {
-                const s   = (seg.start / 1000).toFixed(1);
-                const e   = (seg.end   / 1000).toFixed(1);
-                const pct = Math.round(seg.confidence * 100);
-                html += `<div class="results-item">
-                    <span class="item-index">#${i + 1}</span>
-                    <span class="item-time">${s}s – ${e}s</span>
-                    <span class="item-suggestion"></span>
-                    <span class="badge">${pct}%</span>
-                </div>`;
-            });
-            html += '</div>';
-
-        } else if (results.type === 'broll' && Array.isArray(results.opportunities)) {
-            html += `<div class="results-summary">${results.opportunities.length} opportunities detected</div>`;
-            html += '<div class="results-items">';
-            results.opportunities.forEach((opp, i) => {
-                const sec  = (opp.timestamp / 1000).toFixed(1);
-                const pct  = Math.round(opp.confidence * 100);
-                const sugg = opp.suggestion || opp.type || '';
-                html += `<div class="results-item">
-                    <span class="item-index">#${i + 1}</span>
-                    <span class="item-time">@ ${sec}s</span>
-                    <span class="item-suggestion">${sugg}</span>
-                    <span class="badge">${pct}%</span>
-                </div>`;
-            });
-            html += '</div>';
-        }
-
-        list.innerHTML = html;
-        section.style.display = 'block';
-        this.updateStatus('success', 'ANALYSIS COMPLETE');
-    },
-
-    hideResults() {
-        const el = document.getElementById('resultsSection');
-        if (el) el.style.display = 'none';
     },
 
     // ── Loading / status / error ──────────────────────────────────────
@@ -2049,7 +1155,6 @@ const UIController = {
         if (overlay) overlay.style.display = 'flex';
         if (text)    text.textContent = (message || 'Analyzing…').toUpperCase();
         if (errBar)  errBar.style.display = 'none';
-        this.updateStatus('analyzing', 'ANALYZING…');
     },
 
     hideLoading() {
@@ -2067,94 +1172,22 @@ const UIController = {
             text.textContent = message;
             bar.style.display = 'flex';
         }
-        this.updateStatus('error', 'ERROR');
+        this._updateStatusBar('Error', 0);
+        Logger.error('UI error: ' + message);
     },
 
+    // Legacy method kept for any code that still calls it
     updateStatus(status, message) {
-        UIState.setStatus(status, message);
-        const pill = document.getElementById('statusIndicator');
-        const text = document.getElementById('statusText');
-        if (pill) pill.className = `status-pill status-${status}`;
-        if (text) text.textContent = message || status.toUpperCase();
+        this._updateStatusBar(message || status, status === 'success' ? 100 : status === 'analyzing' ? 50 : 0);
     },
 
-    // ── Settings persistence ──────────────────────────────────────────
+    // ── Utility ───────────────────────────────────────────────────────
 
-    saveSettings() {
-        try {
-            const provider = this._getProvider();
-            UIState.updateSetting('apiKey',     this._getApiKey());
-            UIState.updateSetting('aiProvider', provider);
-            UIState.updateSetting('aiModel',    this._getModel());
-            UIState.updateSetting('baseUrl',    this._getBaseUrl());
-            localStorage.setItem('pluginSettings', JSON.stringify(UIState.getSettings()));
-            CONSTANTS.AI_PROVIDER = provider;
-            this._initAIService();
-            this.updateStatus('success', 'SETTINGS SAVED');
-            setTimeout(() => this.updateStatus('ready', 'READY'), 2000);
-            Logger.debug('Settings saved: provider=' + provider);
-        } catch (e) {
-            Logger.error('Failed to save settings', e);
-        }
-    },
-
-    restoreSettings() {
-        try {
-            const saved = localStorage.getItem('pluginSettings');
-            if (!saved) return;
-            const settings = JSON.parse(saved);
-
-            for (const [key, value] of Object.entries(settings)) {
-                UIState.updateSetting(key, value);
-
-                // Restore slider/range values + their display labels
-                const rangeEl = document.getElementById(key);
-                if (rangeEl && rangeEl.type === 'range') {
-                    rangeEl.value = value;
-                    const unit = key === 'silenceThreshold' ? ' dB'
-                               : key === 'minSilenceDuration' ? ' ms' : '';
-                    this.updateRangeDisplay(key, value, unit);
-                }
-
-                // Restore text inputs (API key)
-                const textEl = document.getElementById(key + 'Input') || document.getElementById(key);
-                if (textEl && textEl.tagName === 'INPUT' && textEl.type !== 'range') {
-                    textEl.value = value;
-                }
-            }
-
-            // Restore provider selector and model from UI, but prioritize CONSTANTS
-            if (settings.aiProvider || CONSTANTS.AI_PROVIDER) {
-                const provEl = document.getElementById('aiProvider');
-                const displayProvider = CONSTANTS.AI_PROVIDER || settings.aiProvider;
-                if (provEl) provEl.value = displayProvider;
-                CONSTANTS.AI_PROVIDER = displayProvider;
-                this._updateProviderUI(displayProvider);
-            }
-            if (settings.aiModel || CONSTANTS.AI_MODEL) {
-                const modEl = document.getElementById('aiModel');
-                const displayModel = CONSTANTS.AI_MODEL || settings.aiModel;
-                if (modEl) modEl.value = displayModel;
-            }
-
-            // Restore base URL field
-            if (settings.baseUrl) {
-                const urlEl = document.getElementById('baseUrlInput');
-                if (urlEl) urlEl.value = settings.baseUrl;
-            }
-
-            // Initialize AI service from CONSTANTS (primary) or restored settings (secondary)
-            AIService.initialize({
-                provider: CONSTANTS.AI_PROVIDER || settings.aiProvider || 'ollama',
-                apiKey:   settings.apiKey     || '',
-                model:    CONSTANTS.AI_MODEL || settings.aiModel    || '',
-                baseUrl:  settings.baseUrl    || '',
-            });
-
-            Logger.debug('Settings restored: provider=' + (CONSTANTS.AI_PROVIDER || settings.aiProvider || 'ollama') + ', model=' + (CONSTANTS.AI_MODEL || settings.aiModel || ''));
-        } catch (e) {
-            Logger.error('Failed to restore settings', e);
-        }
+    _formatTime(secs) {
+        if (!secs || isNaN(secs)) return '0:00';
+        var m = Math.floor(secs / 60);
+        var s = Math.floor(secs % 60);
+        return m + ':' + (s < 10 ? '0' : '') + s;
     },
 };
 

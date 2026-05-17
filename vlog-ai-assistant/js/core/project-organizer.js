@@ -40,6 +40,19 @@ const ProjectOrganizer = {
             return { success: false, error: 'No clips found in project' };
         }
 
+        // Detect new footage since last organize run
+        if (typeof ProjectMemory !== 'undefined' && ProjectMemory._sequenceId) {
+            try {
+                var clipPaths = clips.map(function(c) { return c.mediaPath || c.name || ''; }).filter(Boolean);
+                var newClips  = await ProjectMemory.detectNewFootage(clipPaths);
+                if (newClips.length > 0) {
+                    Logger.info('[Memory] New footage: ' + newClips.length + ' clip(s) since last run');
+                }
+            } catch (memErr) {
+                Logger.warn('[Memory] detectNewFootage failed: ' + memErr.message);
+            }
+        }
+
         emit({ type: 'start', total: clips.length });
 
         // ── PASS 1: sequential frame extraction + llava description ──────────
@@ -158,6 +171,17 @@ const ProjectOrganizer = {
         console.timeEnd('organise');
         Logger.info('[ProjectOrganizer] Done — ' + totalMoved + ' clip(s) in ' + binResults.length + ' bin(s)');
         emit({ type: 'done', totalMoved, bins: binResults });
+
+        if (totalMoved > 0 && typeof ProjectMemory !== 'undefined' && ProjectMemory._sequenceId) {
+            try {
+                var binMap = {};
+                binResults.forEach(function(b) { if (b.binName) binMap[b.binName] = b; });
+                await ProjectMemory.recordOrganise(binMap);
+            } catch (memErr) {
+                Logger.warn('[Memory] recordOrganise failed: ' + memErr.message);
+            }
+        }
+
         return { success: totalMoved > 0, totalMoved, bins: binResults };
     },
 };

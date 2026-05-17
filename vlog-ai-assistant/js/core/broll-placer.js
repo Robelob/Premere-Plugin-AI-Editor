@@ -28,8 +28,9 @@ const BrollPlacer = {
 
         // ── Get all project clips from CEP bridge ─────────────────────────────
         let brollClips = [];
+        let bridgeResult = null;
         try {
-            const bridgeResult = await CEPBridge.sendCommand('getBrollClips', {}, 30000);
+            bridgeResult = await CEPBridge.sendCommand('getBrollClips', {}, 30000);
             if (bridgeResult && bridgeResult.success) {
                 brollClips = bridgeResult.clips || [];
                 Logger.info('[BrollPlacer] Got ' + brollClips.length + ' project clip(s)');
@@ -45,6 +46,23 @@ const BrollPlacer = {
 
         if (!brollClips.length) {
             return { success: false, error: 'No clips in project. Import media first.' };
+        }
+
+        // ── Filter out A-roll clips (clips already on V1) ─────────────────────
+        // The CEP bridge now returns v1MediaPaths alongside the clip list.
+        // Remove those from the B-roll candidate pool so the AI never sees them.
+        var v1Paths = ((bridgeResult && bridgeResult.v1MediaPaths) || []).map(function(p) { return p.toLowerCase(); });
+        if (v1Paths.length > 0) {
+            var beforeFilter = brollClips.length;
+            brollClips = brollClips.filter(function(c) {
+                return v1Paths.indexOf((c.mediaPath || '').toLowerCase()) === -1;
+            });
+            Logger.info('[BrollPlacer] Excluded ' + (beforeFilter - brollClips.length) +
+                ' A-roll clip(s) from B-roll candidates. Remaining: ' + brollClips.length);
+        }
+
+        if (!brollClips.length) {
+            return { success: false, error: 'No B-roll candidates found. All project clips are already used as A-roll on V1. Import dedicated B-roll footage first.' };
         }
 
         // ── Get V1 duration and send to text LLM for matching ─────────────────
@@ -301,6 +319,15 @@ const BrollPlacer = {
         }
 
         Logger.info('[BrollPlacer] Done — ' + placed + '/' + placements.length + ' placed');
+
+        if (placed > 0 && typeof ProjectMemory !== 'undefined' && ProjectMemory._sequenceId) {
+            try {
+                await ProjectMemory.recordBroll(safePlan.placements || []);
+            } catch (memErr) {
+                Logger.warn('[Memory] recordBroll failed: ' + memErr.message);
+            }
+        }
+
         return { success: placed > 0, placed: placed, total: placements.length, errors: errors };
     },
 

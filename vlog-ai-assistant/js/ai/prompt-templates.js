@@ -266,6 +266,10 @@ const PromptTemplates = {
             'VIDEO LENGTH: ' + totalSecs + ' seconds\n' +
             'TOTAL B-ROLL BUDGET: ' + budgetSecs + ' seconds maximum (40% of video)\n\n' +
             'NON-NEGOTIABLE RULES:\n' +
+            '0. CRITICAL: You may ONLY use clips from the "AVAILABLE CLIPS" list below.\n' +
+            '   These are B-roll candidates. The A-roll (talking-head footage on V1) has\n' +
+            '   already been excluded — do NOT reference or invent any other clip names.\n' +
+            '   If you suggest a clip not in the list, it will be silently dropped.\n' +
             '1. Each B-roll shot: EXACTLY 4–6 seconds (not more, not less)\n' +
             '2. Minimum 10 seconds of talking head between ANY two B-roll shots\n' +
             '3. No B-roll in first 6 seconds — viewer must connect with speaker first\n' +

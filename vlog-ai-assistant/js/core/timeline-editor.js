@@ -95,6 +95,19 @@ const TimelineEditor = {
 
         const editPlan    = { segments, brollOpportunities: [] };
         const markResult  = await this.analyzeAndMark(editPlan);
+
+        if (markResult.success && typeof ProjectMemory !== 'undefined' && ProjectMemory._sequenceId) {
+            try {
+                await ProjectMemory.recordAnalysis(
+                    segments,
+                    this._lastTranscriptWords || [],
+                    []
+                );
+            } catch (memErr) {
+                Logger.warn('[Memory] recordAnalysis failed: ' + memErr.message);
+            }
+        }
+
         return { success: markResult.success, editPlan, silenceMarked: markResult.silenceMarked };
     },
 
